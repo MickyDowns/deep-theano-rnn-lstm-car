@@ -138,13 +138,13 @@ class GameState:
         if self.num_steps % 100 == 0:
             self.move_obstacles()
 
-        # Move cat and dog - they're 5x more stable than self
-        if self.num_steps % 5 == 0:
+        # Move cat and dog - they're 10x more stable than self
+        if self.num_steps % 10 == 0: # was 5
             self.move_cat()
             self.move_dog()
 
         driving_direction = Vec2d(1, 0).rotated(self.car_body.angle)
-        self.car_body.velocity = 100 * driving_direction
+        self.car_body.velocity = 50 * driving_direction # was 100
 
         # Update the screen and stuff.
         screen.fill(THECOLORS["black"])
@@ -157,6 +157,7 @@ class GameState:
         # Get the current location and the readings there.
         x, y = self.car_body.position
         readings = self.get_sonar_readings(x, y, self.car_body.angle)
+        #print(readings)
         state = np.array([readings])
 
         # Set the reward.
@@ -167,7 +168,7 @@ class GameState:
             self.recover_from_crash(driving_direction)
         else:
             # Higher readings are better, so return the sum.
-            reward = -5 + int(self.sum_readings(readings) / 10)
+            reward = -5 + int(self.sum_readings(readings) / 16) # 16 was 10
         self.num_steps += 1
 
         return reward, state
@@ -180,21 +181,21 @@ class GameState:
             obstacle.velocity = speed * direction
 
     def move_cat(self):
-        # this is called every 5 frames
-        speed = random.randint(20, 200) # speed vary's
+        # this is called every 20 frames
+        speed = random.randint(20, 100) # speed vary's was 200
         self.cat_body.angle -= random.randint(-1, 1) # angle adjusts (what if we made this
         direction = Vec2d(1, 0).rotated(self.cat_body.angle)
         self.cat_body.velocity = speed * direction
     
     def move_dog(self):
         # this is called every 5 frames. if you want them steadier, change to 10
-        speed = random.randint(20, 200)
+        speed = random.randint(20, 100)
         self.dog_body.angle -= random.randint(-1, 1)
         direction = Vec2d(1, 0).rotated(self.dog_body.angle)
         self.dog_body.velocity = speed * direction
 
     def car_is_crashed(self, readings):
-        if readings[0] == 1 or readings[1] == 1 or readings[2] == 1:
+        if readings[0] == 1 or readings[1] == 1 or readings[2] == 1 or readings[3] == 1 or readings[4] == 1:
             return True
         else:
             return False
@@ -233,15 +234,21 @@ class GameState:
         in a sonar "arm" is non-zero, then that arm returns a distance of 5.
         """
         # Make our arms.
-        arm_left = self.make_sonar_arm(x, y)
-        arm_middle = arm_left
-        arm_right = arm_left
+        arm_left_45 = self.make_sonar_arm(x, y) # added _22 & _45
+        arm_left_22 = arm_left_45
+        arm_middle = arm_left_45
+        arm_right_22 = arm_left_45
+        arm_right_45 = arm_left_45
 
         # Rotate them and get readings.
-        readings.append(self.get_arm_distance(arm_left, x, y, angle, 0.75))
+        readings.append(self.get_arm_distance(arm_left_45, x, y, angle, 0.75))
+        readings.append(self.get_arm_distance(arm_left_22, x, y, angle, 0.37))
         readings.append(self.get_arm_distance(arm_middle, x, y, angle, 0))
-        readings.append(self.get_arm_distance(arm_right, x, y, angle, -0.75))
-
+        readings.append(self.get_arm_distance(arm_right_22, x, y, angle, -0.37))
+        readings.append(self.get_arm_distance(arm_right_45, x, y, angle, -0.75))
+        
+        print(readings)
+        
         if show_sensors:
             pygame.display.update()
 
