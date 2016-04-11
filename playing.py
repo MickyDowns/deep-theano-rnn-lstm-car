@@ -7,8 +7,11 @@ import numpy as np
 from nn import neural_net
 import random
 
-NUM_SENSORS = 5
-# was 3
+NUM_INPUT = 8
+NUM_OUTPUT = 6
+START_SPEED = 50
+START_ACTION = 0
+START_DISTANCE = 0
 
 
 def play(model):
@@ -17,24 +20,24 @@ def play(model):
     game_state = carmunk.GameState()
 
     # Do nothing to get initial.
-    _, state = game_state.frame_step((2))
+    state, _, speed, _, _, _ = game_state.frame_step(START_ACTION, START_SPEED, START_DISTANCE)
 
     # Move.
     while True:
         car_distance += 1
-
+        
         # Choose action.
         action = (np.argmax(model.predict(state, batch_size=1)))
-
+        
         # Take action.
-        _, state = game_state.frame_step(action)
-
+        state, _, speed, _, _, _ = game_state.frame_step(action, speed, car_distance)
+        
         # Tell us something.
         if car_distance % 1000 == 0:
             print("Current distance: %d frames." % car_distance)
 
 
 if __name__ == "__main__":
-    saved_model = 'saved-models/164-150-100-50000-500000.h5'
-    model = neural_net(NUM_SENSORS, [164, 150], saved_model)
+    saved_model = 'saved-best_action_models/240-160-100-50000-100000.h5'
+    model = neural_net(NUM_INPUT, [240, 160, 80], NUM_OUTPUT, saved_model)
     play(model)

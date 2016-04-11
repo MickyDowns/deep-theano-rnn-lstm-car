@@ -18,44 +18,64 @@ class LossHistory(Callback):
         self.losses.append(logs.get('loss'))
 
 
-def neural_net(num_sensors, params, load=''):
-    model = Sequential()
+def neural_net(num_inputs, params, num_outputs, load=''):
+    best_action_model = Sequential()
 
     # First layer.
-    model.add(Dense(
-        params[0], init='lecun_uniform', input_shape=(num_sensors,)
-    ))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.2))
+    best_action_model.add(Dense(params[0], init='lecun_uniform', input_shape=(num_inputs,)))
+    best_action_model.add(Activation('relu'))
+    best_action_model.add(Dropout(0.2))
 
     # Second layer.
-    model.add(Dense(params[1], init='lecun_uniform'))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.2))
+    best_action_model.add(Dense(params[1], init='lecun_uniform'))
+    best_action_model.add(Activation('relu'))
+    best_action_model.add(Dropout(0.2))
+
+    # Third layer.
+    best_action_model.add(Dense(params[2], init='lecun_uniform'))
+    best_action_model.add(Activation('relu'))
+    best_action_model.add(Dropout(0.2))
 
     # Output layer.
-    model.add(Dense(3, init='lecun_uniform'))
-    model.add(Activation('linear'))
+    best_action_model.add(Dense(num_outputs, init='lecun_uniform'))
+    best_action_model.add(Activation('linear'))
 
     rms = RMSprop()
-    model.compile(loss='mse', optimizer=rms)
+    best_action_model.compile(loss='mse', optimizer=rms)
 
     if load:
-        model.load_weights(load)
+        best_action_model.load_weights(load)
 
-    return model
+    return best_action_model
 
 
-def lstm_net(num_sensors, load=False):
-    model = Sequential()
-    model.add(LSTM(
-        output_dim=512, input_dim=num_sensors, return_sequences=True
-    ))
-    model.add(Dropout(0.2))
-    model.add(LSTM(output_dim=512, input_dim=512, return_sequences=False))
-    model.add(Dropout(0.2))
-    model.add(Dense(output_dim=3, input_dim=512))
-    model.add(Activation("linear"))
-    model.compile(loss="mean_squared_error", optimizer="rmsprop")
 
-    return model
+def lstm_net(num_inputs, params, num_outputs, load=False):
+    best_action_model = Sequential()
+    best_action_model.add(LSTM(output_dim=params[0], input_dim=num_inputs, return_sequences=True))
+    best_action_model.add(Dropout(0.2))
+    best_action_model.add(LSTM(output_dim=params[1], input_dim=params[0], return_sequences=False))
+    best_action_model.add(Dropout(0.2))
+    best_action_model.add(Dense(output_dim=num_outputs, input_dim=512))
+    best_action_model.add(Activation("linear"))
+    best_action_model.compile(loss="mean_squared_error", optimizer="rmsprop")
+
+    return best_action_model
+
+
+#from keras.models import Sequential
+#from keras.layers import Dense, Dropout, Activation
+#from keras.layers import Embedding
+#from keras.layers import LSTM
+
+#model = Sequential()
+#model.add(Embedding(max_features, 256, input_length=maxlen))
+#model.add(LSTM(output_dim=128, activation='sigmoid', inner_activation='hard_sigmoid'))
+#model.add(Dropout(0.5))
+#model.add(Dense(1))
+#model.add(Activation('sigmoid'))
+
+#model.compile(loss='binary_crossentropy', optimizer='rmsprop')
+
+#model.fit(X_train, Y_train, batch_size=16, nb_epoch=10)
+#score = model.evaluate(X_test, Y_test, batch_size=16)
