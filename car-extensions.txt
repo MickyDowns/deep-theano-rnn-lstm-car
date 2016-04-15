@@ -1,0 +1,83 @@
+
+	a. problem
+		i. car scores are not improving 
+	a. symptoms
+		i. end of run distance, reward, etc measures not materially better than beginning
+		ii. need more symptoms
+			a. summarize results of current model e.g., crashes, scores
+			b. run beginning, middle and ending models to observe behavior
+		
+	b. hypothesis
+		i. measurements are wrong and it is better
+			a. run it. 
+		ii. measurements are right
+			a. model is optimizing wrong values. 
+				- check actions, rewards step by step to ensure they’re doing what you want. 
+				- DONE: cleaned up reporting, made sure speed being passed.
+			b. model is broken
+				- revert to two output model to ensure it can learn.
+				- DONE: it can learn w/ only two. 
+			b. right values, not broken, but can’t influence them
+				- DONE: can with a more complex network
+			c. right values, can influence, but can’t solve. 
+				- investigate new models e.g., 
+					+ just add new layers
+						- DONE: adding 3rd hidden improved
+						- ??? 4th hidden
+					+ LSTM - given importance of memory
+
+	c. better model
+		i. add easter eggs or re-xy penalty
+		ii. prior model to predict trajectories, future state
+			a. reading 1: inventory objects
+			b. reading 2: inventory objects, net interim move
+			c. calculate trajectory
+			d. predict future position (really sensor / vector reading)
+			e. train on accuracy of that position
+			f. feed prediction into next layer as revised readings
+				maybe even with current readings
+		ii. if hovering or swarming copters objective, should you:
+			a. be using directional impulse i.e., fwd, back, right, left
+			b. be working in 3D i.e., up, down
+			
+ease of use:
+1. jupyter notebook w/ bash configuration commands
+2. bayesian optimization
+3. run on google cloud platform? no gpu's. 
+
+	
+4. bayesian hyper parm optimization
+5. could you gradually introduce more dogs/cats?
+
+
+applications:
+1. adapt to stock market predictions (think of the "Go" model)
+
+key concepts:
+1. state: all info necessary to make a decision that you expect to take you to a higher value state. so, reinforcement learning is to 1. learn value of states, or 2. the value of state-action pairs.
+2. policy (pi): the strategy we take to get to high value states (or take high-value actions) i.e., hit until 19. pi(s) takes state, returns action. generally, pi(s) evaluates all possible actions given s and returns highest value. policy evolves as you learn/improve value estimates.
+3. value function (v_pi(s)): takes state s and returns value V_pi(s). 
+4. action-value function (Q(s,a)): accepts state s and action a and returns value of taking action given state. 
+5. if you use value function, value of a state depends on policy pi i.e., you're on 20, w/ hit or stay options, value of state is only high if you "stay" b/c "hit" will likely bust. so, value of state is equivalent to highest action value for that state.
+6. q-learning: type of temporal difference (TD) algorithms indicating time differences btwn actions and rwards matter. MAKE UPDATES AFTER EVERY ACTION. 
+	i.e., make prediction based on priors, take action based on prediction, receive reward, update prediction:
+	Q(S_t,A_t) leftarrow Q(S_t,A_t) + \alpha[R_t_1 + maxQ(S_+t, alpha_t+1) - Q(S_t,A_t)]
+7. neural nets has weights and a vector of parameters (theta) that are used to improve the output (value) given a state. key is that state is not specific, but can be generalized. 
+8. new formula: r_t+1 + gamma * max(s', a') for the just-happend state where gamma 0->1 is the discount factor applied to future rewards. 0 means focus on present reward. 
+8. on-policy methods: we iteratively learn about state values while we improve the policy. so, updates to state values depend on policy. 
+9. off-policy methods: do not depend on policy to update value function. q-learning = off-policy. so, you can follow one policy while learning another. 
+	e.g., q-learning could take random actions, while still learning other policy function (KEY QUESTION: IS HE LEARNING ON EACH STEP?).
+10. Google's DeepMind: instead of a nn that takes state and action to output value of that state-action pair, it build a network that accepts a state and outut q-values for each possible action. so, just need to run it once for each move. 
+11. interesting that he started w/ 64 input nodes (4x4x4), blew it up to 164, then 150 then down to 4 (up, dwn, right, left).
+12. he used "epsilon greedy implementation" so at time t w/ probability p he chooses a random action and 1-p the highest Q-value action. WHY NOT JUST GO ALL NEURAL ALL THE TIME? Random moves enable learning. Declining epsilon decreases proportion of random moves. 
+13. details: http://outlace.com/Reinforcement-Learning-Part-3/ under online training
+14. target value for training: reward + (gamma * maxQ) where 0 < gamma <1
+15. catastrophic forgetting: first iter, model moves right, wins. second game, new layout, model moves right, loses. does back prop, but unable to detect differences, never learns.
+16. experience replay: the solution to CF where you give a minibatch updating the online learning scheme. 
+	a. in state s, take action a, observer new state s_t+1 and reward r_t+1
+	b. store as a tuple (s, a, s_t_1, r_t_+1) in a list up to length N.
+	c. once "buffer" is filled, randomly select a subset (e.g., 40)
+	d. iterate thru subset and calculate value updates for each; store in a target array (e.g., y_train) and store the states s of each memory in X_train.
+		so, seems like you're starting w/ best model, feeding selection of states to prime it, then getting est for current state?
+		so, in addition to learning the action-value for the action we just took, we're also going to use a random sample of past experiences to prevent catastrophic forgetting.
+17. looks like gamma is the learning rate. higher the gamma, lower the rate. 

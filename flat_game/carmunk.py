@@ -14,10 +14,8 @@
 import random
 import math
 import numpy as np
-
 import pygame
 from pygame.color import THECOLORS
-
 import pymunk
 from pymunk.vec2d import Vec2d
 from pymunk.pygame_util import draw
@@ -28,17 +26,34 @@ height = 700
 pygame.init()
 screen = pygame.display.set_mode((width, height))
 clock = pygame.time.Clock()
-CAR_COLOR = "blue"
+CAR_COLOR = "green"
 CAR_SMILE = "blue"
 OBSTACLE_COLOR = "purple"
 CAT_COLOR = "orange"
+
+# operating modes based on which neural net model is training
+FUTURE_STATE = 1
+BEST_TURN = 2
+BEST_SPEED = 3
+BEST_DIST = 4
+REVERSE = 5
+
+# operating parameters
+MIN_SPEED = 20
+MAX_SPEED = 100
+AVG_READING = 1
+MIN_READING = 2
+reading_reward_basis = MIN_READING
+
+# training parameters
+FUTURE_FLIPS = 1
 
 # Turn off alpha since we don't use it.
 screen.set_alpha(None)
 
 # Showing sensors and redrawing slows things down.
-show_sensors = True # was False
-draw_screen = True # was False
+show_sensors = False # was False
+draw_screen = False # was False
 
 
 class GameState:
@@ -56,6 +71,7 @@ class GameState:
         # Record steps.
         self.num_steps = 0
         self.num_off_scrn = 0
+        #self.xy_history = [(0,0)]
 
         # Create walls.
         static = [pymunk.Segment(self.space.static_body,(0, 1), (0, height), 1),
@@ -77,10 +93,11 @@ class GameState:
         self.obstacles.append(self.create_obstacle(600, 600, 50)) # was 35
         
         # Create a cat and dog.
-        self.create_cat()
-        self.create_dog()
-        self.create_goat()
-        self.create_sheep()
+        self.cats = []
+        self.cats.append(self.create_cat(50,height-100))
+        self.cats.append(self.create_cat(50,height-600))
+        self.cats.append(self.create_cat(950,height-100))
+        self.cats.append(self.create_cat(950,height-600))
 
     def create_obstacle(self, x, y, r):
         c_body = pymunk.Body(pymunk.inf, pymunk.inf)
@@ -91,49 +108,17 @@ class GameState:
         self.space.add(c_body, c_shape)
         return c_body
 
-    def create_cat(self):
+    def create_cat(self,x,y):
         inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
-        self.cat_body = pymunk.Body(1, inertia)
-        self.cat_body.position = 50, height - 100
-        self.cat_shape = pymunk.Circle(self.cat_body, 35) # was 30
-        self.cat_shape.color = THECOLORS[CAT_COLOR]
-        self.cat_shape.elasticity = 1.0
-        self.cat_shape.angle = 0.5
-        direction = Vec2d(1, 0).rotated(self.cat_body.angle)
-        self.space.add(self.cat_body, self.cat_shape)
-    
-    def create_dog(self):
-        inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
-        self.dog_body = pymunk.Body(1, inertia)
-        self.dog_body.position = 50, height - 600
-        self.dog_shape = pymunk.Circle(self.dog_body, 35) # was 30
-        self.dog_shape.color = THECOLORS[CAT_COLOR]
-        self.dog_shape.elasticity = 1.0
-        self.dog_shape.angle = 0.5
-        direction = Vec2d(1, 0).rotated(self.dog_body.angle)
-        self.space.add(self.dog_body, self.dog_shape)
-    
-    def create_goat(self):
-        inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
-        self.goat_body = pymunk.Body(1, inertia)
-        self.goat_body.position = 950, height - 100
-        self.goat_shape = pymunk.Circle(self.goat_body, 35) # was 30
-        self.goat_shape.color = THECOLORS[CAT_COLOR]
-        self.goat_shape.elasticity = 1.0
-        self.goat_shape.angle = 0.5
-        direction = Vec2d(1, 0).rotated(self.goat_body.angle)
-        self.space.add(self.goat_body, self.goat_shape)
-    
-    def create_sheep(self):
-        inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
-        self.sheep_body = pymunk.Body(1, inertia)
-        self.sheep_body.position = 950, height - 600
-        self.sheep_shape = pymunk.Circle(self.sheep_body, 35) # was 30
-        self.sheep_shape.color = THECOLORS[CAT_COLOR]
-        self.sheep_shape.elasticity = 1.0
-        self.sheep_shape.angle = 0.5
-        direction = Vec2d(1, 0).rotated(self.sheep_body.angle)
-        self.space.add(self.sheep_body, self.sheep_shape)
+        cat_body = pymunk.Body(1, inertia)
+        cat_body.position = x, y
+        cat_shape = pymunk.Circle(cat_body, 35) # was 30
+        cat_shape.color = THECOLORS[CAT_COLOR]
+        cat_shape.elasticity = 1.0
+        cat_shape.angle = 0.5
+        direction = Vec2d(1, 0).rotated(cat_body.angle)
+        self.space.add(cat_body, cat_shape)
+        return cat_body
 
     def create_car(self, x, y, r):
         inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
@@ -147,51 +132,73 @@ class GameState:
         self.car_body.apply_impulse(driving_direction)
         self.space.add(self.car_body, self.car_shape)
 
-    def frame_step(self, action, cur_speed, car_distance):
+    def frame_step(self, cur_mode, turn_action, speed_action, cur_speed, car_distance):
+ 
+        if cur_mode == BEST_TURN or cur_mode == BEST_SPEED:
+            # action == 0 is continue straight
+            if turn_action == 1:  # slight left.
+                self.car_body.angle -= .2
+            elif turn_action == 2:  # hard left.
+                self.car_body.angle -= .4
+            elif turn_action == 3:  # slight right.
+                self.car_body.angle += .2
+            elif turn_action == 4:  # hard right.
+                self.car_body.angle += .4
         
-        # action == 0 is continue straight
-        if action == 1:  # Turn left.
-            self.car_body.angle -= .2
-        elif action == 2:  # Turn right.
-            self.car_body.angle += .2
-        elif action == 3:  # Reverse.
-            self.car_body.angle += 3.14
-        elif action == 4: # Slow down
-            cur_speed -= 5
-        elif action == 5: # Speed up
-            cur_speed += 5
-            
+        if cur_mode == BEST_SPEED:
+            # action == 0 is no change
+            if speed_action == 1: # Slow downs
+                if cur_speed > MIN_SPEED:
+                    cur_speed -= 2
+            elif speed_action == 2: # Speed up
+                if cur_speed < MAX_SPEED:
+                    cur_speed += 2
+            #elif turn_action == 3:  # Reverse.
+                #self.car_body.angle += 3.14
+        
+        ####for flip in range(FUTURE_FLIPS):
+        
         # Move obstacles - they're 20x more stable than self
         if self.num_steps % 20 == 0: # was 100
             self.move_obstacles()
 
-        # Move cat and dog - they're 10x more stable than self
-        if self.num_steps % 5 == 0: # was 5
-            self.move_cat()
-            self.move_dog()
-            self.move_goat()
-            self.move_sheep()
+        # Move cat and dog - they're 5x more stable than self
+        if self.num_steps % 5 == 0:
+            self.move_cats()
 
         driving_direction = Vec2d(1, 0).rotated(self.car_body.angle)
         self.car_body.velocity = cur_speed * driving_direction # was 100
-        
+
         # Update the screen and stuff.
         screen.fill(THECOLORS["black"])
         draw(screen, self.space)
         self.space.step(1./10)
         if draw_screen:
             pygame.display.flip()
-        clock.tick()
 
         # Get the current location and the readings there.
         x, y = self.car_body.position
-        readings = self.get_sonar_readings(x, y, self.car_body.angle)
-        readings.append(cur_speed)
+        readings = self.get_sonar_readings(x, y, self.car_body.angle, cur_mode)
+        
+        if cur_mode == BEST_SPEED:
+            readings.append(turn_action)
+            readings.append(cur_speed)
         state = np.array([readings])
-
-        reward_readings = round(self.sum_readings(readings)/(7*20),2)
-        reward_distance = round(car_distance * 0, 2)
-        reward_speed = round(cur_speed / 25, 2)
+        
+        # Calculate rewards based on training mode
+        if cur_mode == BEST_TURN:
+            if reading_reward_basis == AVG_READING:
+                reward_readings = int(self.sum_readings(readings)/5)
+            elif reading_reward_basis == MIN_READING:
+                reward_readings = min(readings)
+            
+            reward_new_xy = 0
+            reward_speed = 0 #round(abs(cur_speed) / 25, 2)
+            #self.xy_history.append((rnd_x,rnd_y))
+        elif cur_mode == BEST_SPEED:
+            reward_readings = 0
+            reward_new_xy = 0
+            reward_speed = cur_speed #round(abs(cur_speed) / 25, 2)
 
         # Set the reward.
         # Car crashed when any reading == 1
@@ -205,24 +212,20 @@ class GameState:
                 print("off screen. total off screens", self.num_off_scrn)
                 reward = -1000
             self.recover_from_crash(driving_direction)
+            #self.xy_history = [(0,0)]
         else:
             # Rewards better spacing from objects, steps survived, speed of this step
-            reward = round(reward_readings + reward_distance + reward_speed,2)
+            reward = reward_readings + reward_new_xy + reward_speed
 
-        # de-bug
-#       readings.append(reward)
-#       readings.append(reward_readings)
-#        readings.append(reward_distance)
-#        readings.append(reward_speed)
-#        print(readings)
+        #### if flip == 0 and FUTURE_FLIPS > 1:
+        ####    save_state() i.e., obstacles(x,y, velocity), cats(), cars(), reward
+        #### then, run thru iters saving rewards
+        #### exit the loop, restore_state(), keep worst reward
 
         self.num_steps += 1
-#        print("reward:", reward)
-#        print("reading:", reward_readings)
-#        print("distance:", reward_distance) # rewarding cum distance at each step may not work.
-#        print("speed:", reward_speed)
+        clock.tick()
 
-        return state, reward, cur_speed, reward_readings, reward_distance, reward_speed
+        return state, reward, cur_speed, reward_readings, reward_new_xy, reward_speed
 
     def move_obstacles(self):
         # Randomly move obstacles around. note: this is called every 100 frames
@@ -231,42 +234,20 @@ class GameState:
             direction = Vec2d(1, 0).rotated(self.car_body.angle + random.randint(-2, 2))
             obstacle.velocity = speed * direction
 
-    def move_cat(self):
+    def move_cats(self):
         # this is called every 5 frames
-        speed = random.randint(50, 150) # speed vary's, was 20 to 200
-        self.cat_body.angle -= random.randint(-1, 1) # angle adjusts (what if we made this
-        direction = Vec2d(1, 0).rotated(self.cat_body.angle)
-        self.cat_body.velocity = speed * direction
+        for cat in self.cats:
+            speed = random.randint(50, 150) # speed vary's, was 20 to 200
+            direction = Vec2d(1, 0).rotated(self.car_body.angle + random.randint(-2, 2))
+            cat.velocity = speed * direction
     
-    def move_dog(self):
-        # this is called every 5 frames. if you want them steadier, change to 10
-        speed = random.randint(50, 150) # was 200
-        self.dog_body.angle -= random.randint(-1, 1)
-        direction = Vec2d(1, 0).rotated(self.dog_body.angle)
-        self.dog_body.velocity = speed * direction
-    
-    def move_goat(self):
-        # this is called every 5 frames. if you want them steadier, change to 10
-        speed = random.randint(50, 150) # was 200
-        self.goat_body.angle -= random.randint(-1, 1)
-        direction = Vec2d(1, 0).rotated(self.goat_body.angle)
-        self.goat_body.velocity = speed * direction
-    
-    def move_sheep(self):
-        # this is called every 5 frames. if you want them steadier, change to 10
-        speed = random.randint(50, 150) # was 200
-        self.sheep_body.angle -= random.randint(-1, 1)
-        direction = Vec2d(1, 0).rotated(self.sheep_body.angle)
-        self.sheep_body.velocity = speed * direction
-    
-    # as long as car turns its orientation and keeps moving, it s/b able to use front 3 sensors for crash?
     def car_is_crashed(self, readings):
-        # SHOULD US "ANY"
-        if readings[0] == 1 or readings[1] == 1 or readings[2] == 1 or readings[3] == 1 \
-            or readings[4] == 1 or readings[5] == 1 or readings[6] == 1:
-            return True
-        else:
-            return False
+        return_val = False
+        
+        for reading in readings:
+            if reading == 1:
+                return_val = True
+        return return_val
 
     def recover_from_crash(self, driving_direction):
         """
@@ -293,7 +274,7 @@ class GameState:
             tot += i
         return tot
 
-    def get_sonar_readings(self, x, y, angle):
+    def get_sonar_readings(self, x, y, angle, cur_mode):
         readings = []
         """
         Instead of using a grid of boolean(ish) sensors, sonar readings
@@ -302,6 +283,7 @@ class GameState:
         reading starting at the object. For instance, if the fifth sensor
         in a sonar "arm" is non-zero, then that arm returns a distance of 5.
         """
+        
         # Make our arms.
         arm_1 = self.make_sonar_arm(x, y)
         arm_2 = arm_1
@@ -312,21 +294,19 @@ class GameState:
         arm_7 = arm_1
         
         # Rotate them and get readings.
-        readings.append(self.get_arm_distance(arm_1, x, y, angle, 0))
-        readings.append(self.get_arm_distance(arm_2, x, y, angle, 0.9))
-        readings.append(self.get_arm_distance(arm_3, x, y, angle, 1.8))
-        readings.append(self.get_arm_distance(arm_4, x, y, angle, 2.7))
-        readings.append(self.get_arm_distance(arm_5, x, y, angle, 3.5))
-        readings.append(self.get_arm_distance(arm_6, x, y, angle, 4.4))
-        readings.append(self.get_arm_distance(arm_7, x, y, angle, 5.3))
+        if cur_mode == BEST_TURN or cur_mode == BEST_SPEED:
+            readings.append(self.get_arm_distance(arm_1, x, y, angle, 0))
+            readings.append(self.get_arm_distance(arm_2, x, y, angle, 0.6))
+            readings.append(self.get_arm_distance(arm_3, x, y, angle, -0.6))
+            readings.append(self.get_arm_distance(arm_4, x, y, angle, 1.2))
+            readings.append(self.get_arm_distance(arm_5, x, y, angle, -1.2))
         
-        #readings.append(self.get_arm_distance(arm_1, x, y, angle, 0))
-        #readings.append(self.get_arm_distance(arm_2, x, y, angle, -0.90))
-        #readings.append(self.get_arm_distance(arm_3, x, y, angle, 0.90))
-        #readings.append(self.get_arm_distance(arm_4, x, y, angle, -1.8))
-        #readings.append(self.get_arm_distance(arm_5, x, y, angle, 1.8))
-        #readings.append(self.get_arm_distance(arm_6, x, y, angle, -2.7))
-        #readings.append(self.get_arm_distance(arm_7, x, y, angle, 2.7))
+        if cur_mode == REVERSE:
+            readings.append(self.get_arm_distance(arm_1, x, y, angle, 0))
+            readings.append(self.get_arm_distance(arm_2, x, y, angle, 0.9))
+            readings.append(self.get_arm_distance(arm_3, x, y, angle, -0.9))
+            readings.append(self.get_arm_distance(arm_6, x, y, angle, 2.7))
+            readings.append(self.get_arm_distance(arm_7, x, y, angle, -2.7))
         
         if show_sensors:
             pygame.display.update()
