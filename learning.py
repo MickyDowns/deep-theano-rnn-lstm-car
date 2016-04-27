@@ -2,64 +2,64 @@ from flat_game import carmunk
 import numpy as np
 import random
 import csv
-from nn import turn_net, speed_net, path_net, LossHistory
+from nn import turn_net, speed_net, acquire_net, LossHistory
 import os.path
 import timeit
 import time
 
-# base operating modes based on which neural net model is training
-FUTURE_STATE = 1
+# operating modes drive neural net training
+HUNT = 1
 BEST_TURN = 2
 BEST_SPEED = 3
-BEST_PATH = 4
-cur_mode = BEST_PATH
+ACQUIRE = 4
+cur_mode = ACQUIRE
 
-# record sizing settings
+# turn model settings
 TURN_NUM_SENSOR = 5 # front five sonar distance readings
 TURN_NUM_OUTPUT = 5 # do nothing, two right turn, two left turn
 TURN_NUM_FRAME = 2
-    
+TURN_NUM_INPUT = TURN_NUM_FRAME * TURN_NUM_SENSOR
+
+# speed model settings
 SPEED_NUM_SENSOR = 3 # front five sonar distance readings, turn action, current speed
 SPEED_NUM_OUTPUT = 6 # do nothing, 30, 40, 50, 60, 70
 SPEED_NUM_FRAME = 3
-
-PATH_NUM_SENSOR = 100*70+3 # self x, y
-PATH_NUM_OUTPUT = 3 # nothing, right turn, left turn
-PATH_NUM_FRAME = 1
-
-TURN_NUM_INPUT = TURN_NUM_FRAME * TURN_NUM_SENSOR
 SPEED_NUM_INPUT = SPEED_NUM_FRAME * SPEED_NUM_SENSOR
-PATH_NUM_INPUT = PATH_NUM_FRAME * PATH_NUM_SENSOR
 
-# initialize globals
-GAMMA = 0.9  # Forgetting.
-TUNING = False  # If False, just use arbitrary, pre-selected params.
-if cur_mode == BEST_PATH:
-    START_SPEED = 25
-else:
-    START_SPEED = 50
+# acquire model settings
+ACQUIRE_NUM_SENSOR = 2 # distance, angle
+ACQUIRE_NUM_OUTPUT = 5 # nothing, 2 right turn, 2 left turn
+ACQUIRE_NUM_FRAME = 2
+ACQUIRE_NUM_INPUT = ACQUIRE_NUM_FRAME * ACQUIRE_NUM_SENSOR
 
+# initial settings
+START_SPEED = 50
 START_TURN_ACTION = 0
 START_SPEED_ACTION = 0
 START_DISTANCE = 0
 
-def train_net(turn_model, speed_model, path_model, params):
+# misc
+GAMMA = 0.9  # Forgetting.
+TUNING = False  # If False, just use arbitrary, pre-selected params.
 
+
+def train_net(turn_model, speed_model, acquire_model, params):
+    
     filename = params_to_filename(params)
     
     if cur_mode == BEST_TURN:
         observe = 1000  # Number of frames to observe before training.
     elif cur_mode == BEST_SPEED:
         observe = 2000
-    elif cur_mode == BEST_PATH:
+    elif cur_mode == ACQUIRE:
         observe = 1000
 
     epsilon = 1
-    train_frames = 700000  # Number of frames to play. was 1000000.
+    train_frames = 700000  # number of flips for training
     batchSize = params['batchSize']
     buffer = params['buffer']
 
-    # Initialize variables and structures used below.
+    # initialize variables and structures used below.
     max_car_distance = 0
     car_distance = 0
     t = 0
@@ -68,16 +68,16 @@ def train_net(turn_model, speed_model, path_model, params):
     cum_rwd_dist = 0
     cum_rwd_speed = 0
     data_collect = []
-    #states = []
     replay = []  # stores tuples of (State, Action, Reward, New State').
     save_init = True
     loss_log = []
+    oversample = []
 
     # Create a new game instance.
     game_state = carmunk.GameState()
     
     # Get initial state by doing nothing and getting the state.
-    turn_state, speed_state, path_state, new_reward, cur_speed, _, _, _ = \
+    turn_state, speed_state, acquire_state, new_reward, cur_speed, _, _, _ = \
         game_state.frame_step(cur_mode, START_TURN_ACTION, START_SPEED_ACTION,
                               START_SPEED, START_DISTANCE)
 
@@ -86,11 +86,15 @@ def train_net(turn_model, speed_model, path_model, params):
                                   np.zeros((1, TURN_NUM_SENSOR * (TURN_NUM_FRAME - 1))),
                                   TURN_NUM_SENSOR, TURN_NUM_FRAME)
 
-    speed_state = state_frames(speed_state,
-                           np.zeros((1, SPEED_NUM_SENSOR * (SPEED_NUM_FRAME - 1))),
-                           SPEED_NUM_SENSOR, SPEED_NUM_FRAME)
+    elif cur_mode == ACQUIRE:
+        acquire_state = state_frames(acquire_state,
+                                   np.zeros((1, ACQUIRE_NUM_SENSOR * (ACQUIRE_NUM_FRAME - 1))),
+                                   ACQUIRE_NUM_SENSOR, ACQUIRE_NUM_FRAME)
 
-    # HOW WILL IT KNOW WHICH WAY TO TURN TO SCORE POINTS IF IT CAN ONLY SEE THE LAST TURN? SEEMS WE'LL NEED TO DO FRAMES OR LSTM... WHICH MEANS EITHER GREATER DOWN-SAMPLING OR SETTING SUB-REGIONS, MINING THOSE, THEN ESTABLISHING A NEW SUB-REGION.
+    if cur_mode == BEST_SPEED:
+        speed_state = state_frames(speed_state,
+                                   np.zeros((1, SPEED_NUM_SENSOR * (SPEED_NUM_FRAME - 1))),
+                                   SPEED_NUM_SENSOR, SPEED_NUM_FRAME)
 
     # Let's time it.
     start_time = timeit.default_timer()
@@ -98,41 +102,40 @@ def train_net(turn_model, speed_model, path_model, params):
     # Run the frames.
     while t < train_frames:
         
+        # used to slow things down for de-bugging
         #time.sleep(1)
         
         t += 1 # counts total training distance traveled
         car_distance += 1 # counts distance between crashes
 
         # Choose an action.
-        if random.random() < epsilon or t < observe:
+        if random.random() < epsilon or t < observe: # epsilon degrades over flips...
             if cur_mode == BEST_TURN:
-                turn_action = np.random.randint(0, TURN_NUM_OUTPUT)  # random
+                turn_action = np.random.randint(0, TURN_NUM_OUTPUT)
                 speed_action = START_SPEED_ACTION
         
             if cur_mode == BEST_SPEED:
                 turn_action = np.random.randint(0, TURN_NUM_OUTPUT)
                 speed_action = np.random.randint(0, SPEED_NUM_OUTPUT)
 
-            if cur_mode == BEST_PATH:
-                turn_action = np.random.randint(0, PATH_NUM_OUTPUT)
+            if cur_mode == ACQUIRE:
+                turn_action = np.random.randint(0, ACQUIRE_NUM_OUTPUT)
                 speed_action = START_SPEED_ACTION
 
-        else:
-            if cur_mode == BEST_TURN or cur_mode == BEST_SPEED:
+        else: # ...increasing use of predictions over time
+            speed_action = START_SPEED_ACTION
+            
+            if cur_mode in [BEST_TURN, BEST_SPEED]:
             
                 turn_qval = turn_model.predict(turn_state, batch_size=1)
             
-                turn_action = (np.argmax(turn_qval))  # best prediction
+                turn_action = (np.argmax(turn_qval))  # getting best prediction
             
-                speed_action = START_SPEED_ACTION
-            
-            elif cur_mode == BEST_PATH:
+            elif cur_mode == ACQUIRE:
 
-                path_qval = path_model.predict(path_state, batch_size=1)
+                acquire_qval = acquire_model.predict(acquire_state, batch_size=1)
     
-                turn_action = (np.argmax(path_qval))
-        
-                speed_action = START_SPEED_ACTION
+                turn_action = (np.argmax(acquire_qval))
 
             if cur_mode == BEST_SPEED:
             
@@ -140,15 +143,15 @@ def train_net(turn_model, speed_model, path_model, params):
             
                 speed_action = (np.argmax(speed_qval))
         
-        # Take action, observe new state and get our treat.
-        new_turn_state, new_speed_state, new_path_state, new_reward, new_speed, new_rwd_read, new_rwd_dist, new_rwd_speed = game_state.frame_step(cur_mode, turn_action, speed_action, cur_speed, car_distance)
+        # Take action, observe new state and get reward
+        new_turn_state, new_speed_state, new_acquire_state, new_reward, new_speed, new_rwd_turn new_rwd_acquire new_rwd_speed = game_state.frame_step(cur_mode, turn_action, speed_action, cur_speed, car_distance)
 
         # Append (horizontally) historical states for learning speed
         if cur_mode == BEST_TURN or cur_mode == BEST_SPEED:
             new_turn_state = state_frames(new_turn_state, turn_state, TURN_NUM_SENSOR,TURN_NUM_FRAME)
         
-        #elif cur_mode == BEST_PATH:
-        #    new_turn_state = state_frames(new_turn_state, turn_state, #path_NUM_SENSOR,path_NUM_FRAME)
+        elif cur_mode == ACQUIRE:
+            new_acquire_state = state_frames(new_acquire_state, acquire_state, ACQUIRE_NUM_SENSOR, ACQUIRE_NUM_FRAME)
                                       
         if cur_mode == BEST_SPEED:
             new_speed_state = state_frames(new_speed_state, speed_state, SPEED_NUM_SENSOR,SPEED_NUM_FRAME)
@@ -162,9 +165,9 @@ def train_net(turn_model, speed_model, path_model, params):
             
             replay.append((speed_state, speed_action, new_reward, new_speed_state))
 
-        elif cur_mode == BEST_PATH:
+        elif cur_mode == ACQUIRE:
             
-            replay.append((path_state, turn_action, new_reward, new_path_state))
+            replay.append((acquire_state, turn_action, new_reward, new_acquire_state))
 
         # If we're done observing, start training.
         if t > observe:
@@ -194,11 +197,11 @@ def train_net(turn_model, speed_model, path_model, params):
                 speed_model.fit(X_train, y_train, batch_size=batchSize,
                                nb_epoch=1, verbose=0, callbacks=[history])
 
-            elif cur_mode == BEST_PATH:
-                X_train, y_train = process_minibatch(minibatch, path_model,
-                                                     PATH_NUM_INPUT, PATH_NUM_OUTPUT)
+            elif cur_mode == ACQUIRE:
+                X_train, y_train = process_minibatch(minibatch, acquire_model,
+                                                     ACQUIRE_NUM_INPUT, ACQUIRE_NUM_OUTPUT)
                     
-                path_model.fit(X_train, y_train, batch_size=batchSize,
+                acquire_model.fit(X_train, y_train, batch_size=batchSize,
                                 nb_epoch=1, verbose=0, callbacks=[history])
 
             loss_log.append(history.losses)
@@ -206,15 +209,15 @@ def train_net(turn_model, speed_model, path_model, params):
         # Update the starting state with S'.
         turn_state = new_turn_state
         speed_state = new_speed_state
-        path_state = new_path_state
+        acquire_state = new_acquire_state
         cur_speed = new_speed
         
         # accumulations
         cum_rwd += new_reward
-        cum_rwd_read += new_rwd_read
-        cum_rwd_dist += new_rwd_dist
+        cum_rwd_turn += new_rwd_turn
+        cum_rwd_acquire += new_rwd_acquire
         cum_rwd_speed += new_rwd_speed
-        
+
         # Decrement epsilon over time.
         if epsilon > 0.1 and t > observe:
             epsilon -= (1/train_frames)
@@ -235,34 +238,44 @@ def train_net(turn_model, speed_model, path_model, params):
             # Output some stuff so we can watch.
             print("Max: %d at %d\t eps: %f\t dist: %d\t rwd: %d\t read: %d\t newXY: %d\t avg spd: %d\t fps: %d" %
                   (max_car_distance, t, epsilon, car_distance, cum_rwd, \
-                   cum_rwd_read, cum_rwd_dist, cum_rwd_speed/car_distance, \
+                   cum_rwd_turn, cum_rwd_acquire, cum_rwd_speed/car_distance, \
                    int(fps)))
 
             # Reset.
             car_distance = 0
             cum_rwd = 0
-            cum_rwd_read = 0
-            cum_rwd_dist = 0
+            cum_rwd_turn = 0
+            cum_rwd_acquire = 0
             cum_rwd_speed = 0
             start_time = timeit.default_timer()
 
-        if t % 1000 == 0:
+        # oversampling: tripling odds that success record is selected
+        #if cur_mode == ACQUIRE and new_reward == 1000:
+        #    replay.append((acquire_state, turn_action, new_reward, new_acquire_state))
+        #    replay.append((acquire_state, turn_action, new_reward, new_acquire_state))
+
+        if t % 10000 == 0 & car_distance != 0:
             
             print("t: %d\t eps: %f\t dist: %d\t rwd: %d\t read: %d\t comp: %d\t avg spd: %d\t" %
-                  (t, epsilon, car_distance, cum_rwd, cum_rwd_read, cum_rwd_dist, cum_rwd_speed/car_distance))
+                  (t, epsilon, car_distance, cum_rwd, cum_rwd_turn, cum_rwd_acquire, cum_rwd_speed/car_distance))
 
         # Save early turn_model, then every 20,000 frames
         if t % 50000 == 0:
             save_init = False
             if cur_mode == BEST_TURN:
                 turn_model.save_weights('models/turn/turn-' + filename + '-' +
-                                               str(t) + '.h5', overwrite=True)
+                                        str(t) + '.h5', overwrite=True)
                 print("Saving turn_model %s - %d" % (filename, t))
+            
             elif cur_mode == BEST_SPEED:
                 speed_model.save_weights('models/speed/speed-' + filename + '-' +
-                                              str(t) + '.h5', overwrite=True)
+                                         str(t) + '.h5', overwrite=True)
                 print("Saving speed_model %s - %d" % (filename, t))
             
+            elif cur_mode == ACQUIRE:
+                acquire_model.save_weights('models/acquire/acquire-' + filename + '-' +
+                                                 str(t) + '.h5', overwrite=True)
+                print("Saving acquire_model %s - %d" % (filename, t))
 
     # Log results after we're done all frames.
     log_results(filename, data_collect, loss_log)
@@ -271,11 +284,10 @@ def train_net(turn_model, speed_model, path_model, params):
 def state_frames(new_state, old_state, num_sensor, num_frame):
     """
     Takes a state returned from the game and turns it into a multi-frame state.
-    Create a new array with the new state and first three of old state,
+    Create a new array with the new state and first N of old state,
     which was the previous frame's new state.
    """
-    # First, turn them back into arrays to make them easy for my small
-    # mind to comprehend.
+    # Turn them back into arrays.
     new_state = new_state.tolist()[0]
     old_state = old_state.tolist()[0][:num_sensor * (num_frame - 1)]
 
@@ -307,8 +319,7 @@ def process_minibatch(minibatch, model, num_input, num_output):
     for memory in minibatch:
         # Get stored values.
         old_state_m, action_m, reward_m, new_state_m = memory
-        print(old_state_m.size)
-        print(old_state_m)
+        
         # Get prediction on old state.
         old_qval = model.predict(old_state_m, batch_size=1)
         
@@ -339,8 +350,21 @@ def process_minibatch(minibatch, model, num_input, num_output):
 
 
 def params_to_filename(params):
-    return str(params['nn'][0]) + '-' + str(params['nn'][1]) + '-' + \
-            str(params['batchSize']) + '-' + str(params['buffer'])
+
+    if len(params['nn']) == 1:
+    
+        return str(params['nn'][0]) + '-' + str(params['batchSize']) + \
+        '-' + str(params['buffer'])
+    
+    elif len(params['nn']) == 2:
+        
+        return str(params['nn'][0]) + '-' + str(params['nn'][1]) + '-' + \
+        str(params['batchSize']) + '-' + str(params['buffer'])
+
+    elif len(params['nn']) == 3:
+
+        return str(params['nn'][0]) + '-' + str(params['nn'][1]) + str(params['nn'][2]) \
+        + '-' + str(params['batchSize']) + '-' + str(params['buffer'])
 
 
 def launch_learn(params):
@@ -395,7 +419,7 @@ if __name__ == "__main__":
             }
             turn_model = turn_net(TURN_NUM_INPUT, nn_param, TURN_NUM_OUTPUT)
             speed_model = 0
-            path_model = 0
+            acquire_model = 0
 
         elif cur_mode == BEST_SPEED:
             saved_model = 'models/turn/turn-250-100-100-50000-500000.h5'
@@ -404,24 +428,24 @@ if __name__ == "__main__":
             # for layer in model.layers:
                 # weights = layer.get_weights()
 
-            nn_param = [SPEED_NUM_INPUT*25, SPEED_NUM_INPUT*10]
+            nn_param = [SPEED_NUM_INPUT * 25, SPEED_NUM_INPUT * 10]
             params = {
-                "batchSize": 100, # was 100
+                "batchSize": 100,
                 "buffer": 50000,
                 "nn": nn_param
             }
             speed_model = speed_net(SPEED_NUM_INPUT, nn_param, SPEED_NUM_OUTPUT)
-            path_model = 0
+            acquire_model = 0
 
-        elif cur_mode == BEST_PATH:
-            nn_param = [PATH_NUM_INPUT*4, PATH_NUM_INPUT*1, int(PATH_NUM_INPUT/4)]
+        elif cur_mode == ACQUIRE:
+            nn_param = [ACQUIRE_NUM_INPUT * 15, ACQUIRE_NUM_INPUT * 5]
             params = {
-                "batchSize": 100, # was 100
+                "batchSize": 100,
                 "buffer": 50000,
                 "nn": nn_param
             }
-            path_model = path_net(PATH_NUM_INPUT, nn_param, PATH_NUM_OUTPUT)
+            acquire_model = acquire_net(ACQUIRE_NUM_INPUT, nn_param, ACQUIRE_NUM_OUTPUT)
             speed_model = 0
             turn_model = 0
 
-        train_net(turn_model, speed_model, path_model, params)
+        train_net(turn_model, speed_model, acquire_model, params)

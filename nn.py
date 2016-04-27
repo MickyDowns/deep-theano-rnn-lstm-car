@@ -70,7 +70,7 @@ def speed_net(num_inputs, params, num_outputs, load=''):
     return model
 
 
-def path_net(num_inputs, params, num_outputs, load=''):
+def acquire_net(num_inputs, params, num_outputs, load=''):
     model = Sequential()
     
     # First layer.
@@ -79,19 +79,9 @@ def path_net(num_inputs, params, num_outputs, load=''):
     model.add(Dropout(0.2))
     
     # Second layer.
-    model.add(Dense(params[1], init='lecun_uniform'))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.2))
-    
-    # Third layer.
-    model.add(Dense(params[1], init='lecun_uniform'))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.2))
-
-    # Fourth layer.
-    model.add(Dense(params[1], init='lecun_uniform'))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.2))
+    #model.add(Dense(params[1], init='lecun_uniform'))
+    #model.add(Activation('relu'))
+    #model.add(Dropout(0.2))
 
     # Output layer.
     model.add(Dense(num_outputs, init='lecun_uniform'))
