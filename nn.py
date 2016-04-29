@@ -50,12 +50,17 @@ def speed_net(num_inputs, params, num_outputs, load=''):
     # First layer.
     model.add(Dense(params[0], init='lecun_uniform', input_shape=(num_inputs,)))
     model.add(Activation('relu'))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.3))
     
     # Second layer.
     model.add(Dense(params[1], init='lecun_uniform'))
     model.add(Activation('relu'))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.3))
+    
+    # Third layer.
+    model.add(Dense(params[2], init='lecun_uniform'))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.3))
     
     # Output layer.
     model.add(Dense(num_outputs, init='lecun_uniform'))

@@ -29,10 +29,10 @@ from math import atan2, degrees, pi, sqrt
 
 # operating modes drive neural net training
 HUNT = 1
-BEST_TURN = 2
-BEST_SPEED = 3
+TURN = 2
+SPEED = 3
 ACQUIRE = 4
-cur_mode = ACQUIRE
+cur_mode = SPEED
 
 # PyGame init
 width = 1000
@@ -51,7 +51,7 @@ OBSTACLE_COLOR = "purple"
 CAT_COLOR = "orange"
 CAR_BODY_DIAM = 12
 SONAR_ARM_LEN = 20
-show_sensors = False # Showing sensors and redrawing slows things down.
+show_sensors = True # Showing sensors and redrawing slows things down.
 draw_screen = True
 
 # turn model settings
@@ -61,7 +61,7 @@ MIN_READING = 2
 reading_reward_basis = MIN_READING
 
 # speed model settings
-SPEEDS = [30,40,50,60,70]
+SPEEDS = [30,50,70]
 
 # acquire model settngs
 target_grid = pygame.Surface((width, height), pygame.SRCALPHA, 32)
@@ -112,7 +112,7 @@ class GameState:
             s.color = THECOLORS['red']
         self.space.add(static)
         
-        if cur_mode in [BEST_TURN, BEST_SPEED, HUNT]:
+        if cur_mode in [TURN, SPEED, HUNT]:
 
             # create slow, randomly moving, larger obstacles
             self.obstacles = []
@@ -151,7 +151,7 @@ class GameState:
     def frame_step(self, cur_mode, turn_action, speed_action, cur_speed, car_distance):
         
         # plot move based on current (active) model prediction
-        if cur_mode in [BEST_TURN, BEST_SPEED, ACQUIRE, HUNT]:
+        if cur_mode in [TURN, SPEED, ACQUIRE, HUNT]:
             # action == 0 is continue straight
             if turn_action == 1:  # slight right adjust to current trajectory
                 self.car_body.angle -= .2
@@ -162,7 +162,7 @@ class GameState:
             elif turn_action == 4:  # hard left
                 self.car_body.angle += .4
         
-        if cur_mode == BEST_SPEED:
+        if cur_mode == SPEED:
             # action == 0 is no speed change
             if speed_action == 1:
                 cur_speed = SPEEDS[0] # setting speed valued directly see SPEEDS
@@ -170,16 +170,12 @@ class GameState:
                 cur_speed = SPEEDS[1]
             elif speed_action == 3:
                 cur_speed = SPEEDS[2]
-            elif speed_action == 4:
-                cur_speed = SPEEDS[3]
-            elif speed_action == 5:
-                cur_speed = SPEEDS[4]
         
         # effect move by applying speed and direction as vector on self
         driving_direction = Vec2d(1, 0).rotated(self.car_body.angle)
         self.car_body.velocity = cur_speed * driving_direction
         
-        if cur_mode in [BEST_TURN, BEST_SPEED, HUNT]:
+        if cur_mode in [TURN, SPEED, HUNT]:
             # move slow obstacles
             if self.num_steps % 20 == 0: # 20x slower than self
                 self.move_obstacles()
@@ -213,7 +209,10 @@ class GameState:
         # get readings from the various sensors
         sonar_readings = self.get_sonar_readings(self.cur_x, self.cur_y, self.car_body.angle)
         turn_readings = sonar_readings[:TURN_NUM_SENSOR]
-        speed_readings = [min(sonar_readings[:TURN_NUM_SENSOR]), turn_action, cur_speed]
+
+        speed_readings = sonar_readings[:TURN_NUM_SENSOR]
+        speed_readings.append(turn_action)
+        speed_readings.append(cur_speed)
 
         if cur_mode in [ACQUIRE, HUNT]:
         
@@ -269,8 +268,8 @@ class GameState:
             acquire_state = 0
     
         # calculate rewards based on training mode(s) in effect
-
-
+        reward_turn = reward_speed = reward_acquire = reward_hunt = 0
+        
         # car crashed when any reading == 1
         if self.car_is_crashed(turn_readings): # change this based on which sensor you're using
             self.crashed = True
@@ -284,8 +283,7 @@ class GameState:
             self.recover_from_crash(driving_direction)
             
         else:
-            reward_turn = reward_speed = reward_acquire = reward_hunt = 0
-            if cur_mode == BEST_TURN: # Rewards better spacing from objects
+            if cur_mode == TURN: # Rewards better spacing from objects
                 if reading_reward_basis == AVG_READING:
                     reward_turn = int(self.sum_readings(sonar_readings)/5)
                 elif reading_reward_basis == MIN_READING:
@@ -293,7 +291,7 @@ class GameState:
 
                 reward = reward_turn
 
-            elif cur_mode == BEST_SPEED: # rewards distance from objects and speed
+            elif cur_mode == SPEED: # rewards distance from objects and speed
                 sd_speeds = np.std(SPEEDS)
                 sd_dist = np.std(range(20))
             
@@ -329,8 +327,14 @@ class GameState:
 
                 reward = reward_acquire
 
+            elif cur_mode == HUNT: 
+
         self.num_steps += 1
         clock.tick()
+
+        if cur_speed != 70:
+            #take_screen_shot(screen)
+            print(cur_speed)
 
         return turn_state, speed_state, acquire_state, reward, cur_speed, reward_turn, reward_acquire, reward_speed
     

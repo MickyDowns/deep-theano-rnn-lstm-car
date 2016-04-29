@@ -44,7 +44,7 @@ four key files.
 
 ## key learnings
 
-The coursework I've taken in statistical and computational methods have helped. However, in academic cases the dots are often pre-connected... that is, you knew a positive outcome was possible. It was just a matter of figuring out how. That's not the case here. That gap was instructive for me. So, I'll pass along some of the key learnings:
+The coursework I've taken in statistical and computational methods have helped. However, in academic cases the dots are often pre-connected... you knew a positive outcome was possible. It was just a matter of figuring out how. That's not the case here. That gap was instructive for me. So, I'll pass along some of the key learnings:
 
 * importance of tight linkage between inputs (what the model sees/hears and is, therefore, capable of responding to), outputs (the levers the model controls to improve its performance), the objecive function, and the cost function (the deviation from the objective function). Think like a machine. What are you seeing. 
 
