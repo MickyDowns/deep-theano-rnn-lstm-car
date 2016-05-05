@@ -32,7 +32,7 @@ HUNT = 1
 TURN = 2
 SPEED = 3
 ACQUIRE = 4
-cur_mode = SPEED
+cur_mode = TURN
 
 # PyGame init
 width = 1000
@@ -45,23 +45,22 @@ clock = pygame.time.Clock()
     
 screen = pygame.display.set_mode((width, height))
 BACK_COLOR = "black"
+WALL_COLOR = "red"
 CAR_COLOR = "green"
 SMILE_COLOR = "blue"
 OBSTACLE_COLOR = "purple"
 CAT_COLOR = "orange"
 CAR_BODY_DIAM = 12
 SONAR_ARM_LEN = 20
-show_sensors = True # Showing sensors and redrawing slows things down.
-draw_screen = True
+show_sensors = False # Showing sensors and redrawing slows things down.
+draw_screen = False
 
 # turn model settings
 TURN_NUM_SENSOR = 5 # front five sonar distance readings
-AVG_READING = 1
-MIN_READING = 2
-reading_reward_basis = MIN_READING
 
 # speed model settings
-SPEEDS = [30,50,70]
+SPEED_NUM_SENSOR = 7 # front five, rear two sonar
+SPEEDS = [0,30,50,70]
 
 # acquire model settngs
 target_grid = pygame.Surface((width, height), pygame.SRCALPHA, 32)
@@ -69,10 +68,15 @@ target_grid.convert_alpha()
 ACQUIRE_PIXEL_COLOR = "green"
 ACQUIRED_PIXEL_COLOR = "yellow"
 ACQUIRE_PIXEL_SIZE = 2
-ACQUIRE_PIXEL_SEPARATION = 30
+ACQUIRE_PIXEL_SEPARATION = 25
 ACQUIRE_MARGIN = 50
+TARGET_RADIUS = 2
 path_grid = pygame.Surface((width, height))
 PATH_COLOR = "grey"
+
+# hunt model settings
+HUNT_NUM_SENSOR = 7
+STATS_BUFFER = 2000
 
 # future
 DOWN_SAMPLE = 10
@@ -109,7 +113,7 @@ class GameState:
             s.friction = 1.
             s.group = 1
             s.collision_type = 1
-            s.color = THECOLORS['red']
+            s.color = THECOLORS[WALL_COLOR] # 'red'
         self.space.add(static)
         
         if cur_mode in [TURN, SPEED, HUNT]:
@@ -123,11 +127,11 @@ class GameState:
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
                                                    random.randint(70, height-70),63)) # was 125
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-70),63)) # was 125
+                                                    random.randint(70, height-70),63)) # was 125
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-70),30)) # was 35
+                                                    random.randint(70, height-70),30)) # was 35
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-70),30)) # was 35
+                                                    random.randint(70, height-70),30)) # was 35
         
             # create faster, randomly moving, smaller obstacles a.k.a. "cats"
             self.cats = []
@@ -136,7 +140,7 @@ class GameState:
             self.cats.append(self.create_cat(width-50,height-100))
             self.cats.append(self.create_cat(width-50,height-600))
 
-        elif cur_mode in [ACQUIRE, HUNT]:
+        if cur_mode in [ACQUIRE, HUNT]:
             # set up seach grid and feed first target
             self.target_pixels = []
             self.current_target = (0,0)
@@ -144,6 +148,13 @@ class GameState:
             self.generate_targets(True)
             self.last_x = width/2 + 1
             self.last_y = height/2 +1
+            self.assign_next_target((self.last_x, self.last_y), True)
+            self.target_acquired = False
+            self.last_target_dist = 350
+            self.last_obstacle_dist = 10
+            self.target_deltas = [0.4,0.5,0.6]
+            #self.obstacle_deltas = [1,2,3]
+            self.obstacle_dists = [12,10]
         """ note: while python assumes (0,0) is in the lower left of the screen, pygame assumes (0,0) in the upper left. therefore, y+ moves DOWN the y axis. here is example code that illustrates how to handle angles in that environment: https://github.com/mgold/Python-snippets/blob/master/pygame_angles.py. in this implementation, I have flipped the screen so that Y+ moves UP the screen."""
 
     # ***** primary logic controller for game play *****
@@ -152,7 +163,7 @@ class GameState:
         
         # plot move based on current (active) model prediction
         if cur_mode in [TURN, SPEED, ACQUIRE, HUNT]:
-            # action == 0 is continue straight
+            # action == 0 is continue current trajectory
             if turn_action == 1:  # slight right adjust to current trajectory
                 self.car_body.angle -= .2
             elif turn_action == 2:  # hard right
@@ -162,14 +173,16 @@ class GameState:
             elif turn_action == 4:  # hard left
                 self.car_body.angle += .4
         
-        if cur_mode == SPEED:
+        if cur_mode in [SPEED, HUNT]: # setting speed valued directly see SPEEDS
             # action == 0 is no speed change
-            if speed_action == 1:
-                cur_speed = SPEEDS[0] # setting speed valued directly see SPEEDS
-            elif speed_action == 2:
+            if speed_action == 1: # stop
+                cur_speed = SPEEDS[0]
+            elif speed_action == 2: # 30
                 cur_speed = SPEEDS[1]
-            elif speed_action == 3:
+            elif speed_action == 3: # 50
                 cur_speed = SPEEDS[2]
+            elif speed_action == 4: # 70
+                cur_speed = SPEEDS[3]
         
         # effect move by applying speed and direction as vector on self
         driving_direction = Vec2d(1, 0).rotated(self.car_body.angle)
@@ -207,20 +220,18 @@ class GameState:
         self.cur_x, self.cur_y = self.car_body.position
 
         # get readings from the various sensors
-        sonar_readings = self.get_sonar_readings(self.cur_x, self.cur_y, self.car_body.angle)
-        turn_readings = sonar_readings[:TURN_NUM_SENSOR]
-
-        speed_readings = sonar_readings[:TURN_NUM_SENSOR]
+        sonar_dist_readings, sonar_color_readings = \
+            self.get_sonar_dist_color_readings(self.cur_x, self.cur_y, self.car_body.angle)
+        turn_readings = sonar_dist_readings[:TURN_NUM_SENSOR]
+        turn_readings = turn_readings + sonar_color_readings[:TURN_NUM_SENSOR]
+        
+        speed_readings = sonar_dist_readings[:SPEED_NUM_SENSOR]
         speed_readings.append(turn_action)
         speed_readings.append(cur_speed)
 
         if cur_mode in [ACQUIRE, HUNT]:
-        
-            # 1. calculate distance traveled
-            traveled_dist = ((self.cur_x - self.last_x)**2 +
-                             (self.cur_y - self.last_y)**2)**0.5
             
-            # 2. calculate distance and angle to active target(s)
+            # 1. calculate distance and angle to active target(s)
             # a. euclidean distance traveled
             dx = self.current_target[0] - self.cur_x
             dy = self.current_target[1] - self.cur_y
@@ -249,29 +260,72 @@ class GameState:
             if heading_to_target < -180:
                 heading_to_target = heading_to_target + 360
             
-            # 3. calculate efficiency of last move
-            dist_efficiency = ((last_target_dist - target_dist) / (target_dist)**0.5)
+            # 3. calculate normalized efficiency of last move
+            # vs. target acquisition
+            dt = self.last_target_dist - target_dist
+            
+            if abs(dt) >= 12:
+                dt = np.mean(self.target_deltas)
+            
+            # postive distance delta indicates "closing" on the target
+            ndt = (dt- np.mean(self.target_deltas)) / np.std(self.target_deltas)
+            
+            # vs. obstacle avoidance
+            do = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
+            
+            # positive distance delta indicates "avoiding" an obstacle
+            ndo = (do - np.mean(self.obstacle_dists)) / np.std(self.obstacle_dists)
+            
+            if cur_mode == ACQUIRE:
+                move_efficiency = ndt / target_dist**0.333
+                # cubed root of the target distance... lessens effect of distance
+            else:
+                move_efficiency = (ndt + (1.55 * ndo)) / target_dist**0.333
+                # balancing avoidance with acquisition
+                
+            self.last_target_dist = target_dist
+            self.target_deltas.append(dt)
+            if len(self.target_deltas) > STATS_BUFFER:
+                self.target_deltas.pop(0)
+                                    
+            self.last_obstacle_dist = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
+            self.obstacle_dists.append(do)
+            if len(self.obstacle_dists) > STATS_BUFFER:
+                self.obstacle_dists.pop(0)
             
             # 4. if w/in reasonable distance, declare victory
-            if target_dist <= 2:
+            if target_dist <= TARGET_RADIUS:
                 print("************** target acquired ************")
                 self.target_acquired = True
-                target_dist = 1
+                #target_dist = 1
+        
+        if cur_mode == HUNT:
+            hunt_readings = sonar_dist_readings[:HUNT_NUM_SENSOR]
+            hunt_readings.append(target_dist)
+            hunt_readings.append(heading_to_target)
 
         # build states
+        turn_state = speed_state = acquire_state = hunt_state = 0
         turn_state = np.array([turn_readings])
         speed_state = np.array([speed_readings])
 
         if cur_mode in [ACQUIRE, HUNT]:
             acquire_state = np.array([[target_dist, heading_to_target]])
-        else:
-            acquire_state = 0
+            if cur_mode == HUNT:
+                hunt_state = np.array([hunt_readings])
     
         # calculate rewards based on training mode(s) in effect
         reward_turn = reward_speed = reward_acquire = reward_hunt = 0
         
-        # car crashed when any reading == 1
-        if self.car_is_crashed(turn_readings): # change this based on which sensor you're using
+        if cur_mode == SPEED:
+            read = sonar_dist_readings[:SPEED_NUM_SENSOR]
+        elif cur_mode == HUNT:
+            read = sonar_dist_readings[:HUNT_NUM_SENSOR]
+        else:
+            read = sonar_dist_readings[:TURN_NUM_SENSOR]
+        
+        if self.car_is_crashed(read):
+            # car crashed when any reading == 1. note: change (sensor) readings as needed
             self.crashed = True
             reward = -500
             if self.cur_x < 0 or self.cur_x > width or self.cur_y < 0 or self.cur_y > height:
@@ -284,59 +338,73 @@ class GameState:
             
         else:
             if cur_mode == TURN: # Rewards better spacing from objects
-                if reading_reward_basis == AVG_READING:
-                    reward_turn = int(self.sum_readings(sonar_readings)/5)
-                elif reading_reward_basis == MIN_READING:
-                    reward_turn = min(sonar_readings)
-
-                reward = reward_turn
+                reward = reward_turn = min(sonar_dist_readings)
 
             elif cur_mode == SPEED: # rewards distance from objects and speed
-                sd_speeds = np.std(SPEEDS)
-                sd_dist = np.std(range(20))
+                reward = reward_speed = min(sonar_dist_readings)
+                #sd_speeds = np.std(SPEEDS)
+                #sd_dist = np.std(range(20))
             
-                std_speed = cur_speed / sd_speeds
-                std_dist = min(sonar_readings[:TURN_NUM_SENSOR]) / sd_dist
+                #std_speed = cur_speed / sd_speeds
+                #std_dist = min(sonar_dist_readings[:TURN_NUM_SENSOR]) / sd_dist
             
-                std_max_speed = max(SPEEDS) / sd_speeds
-                std_max_dist = SONAR_ARM_LEN / sd_dist
+                #std_max_speed = max(SPEEDS) / sd_speeds
+                #std_max_dist = SONAR_ARM_LEN / sd_dist
             
-                reward_speed = ((std_speed * std_dist) +
-                                ((std_max_speed - std_speed) * (std_max_dist - std_dist)))
+                #reward_speed = ((std_speed * std_dist) +
+                #               ((std_max_speed - std_speed) * (std_max_dist - std_dist)))
 
-                reward = reward_speed
-
-            elif cur_mode == ACQUIRE: # rewards moving in the right direction and acquiring pixels
+            elif cur_mode in [ACQUIRE, HUNT]: # rewards moving in the right direction and acquiring pixels
                 if self.target_acquired == True:
                 
-                    reward_acquire = 1000
-                
-                    take_screen_shot(screen)
+                    reward = reward_acquire = reward_hunt = 1000
                 
                     # remove acquired pixel
                     self.acquired_pixels.append(self.current_target)
                     self.target_pixels.remove(self.current_target)
-                    #print("pct complete:", (len(self.acquired_pixels) /
-                    #                    (len(self.acquired_pixels) + len(self.target_pixels))))
+                    print("pct complete:", (len(self.acquired_pixels) /
+                                        (len(self.acquired_pixels) + len(self.target_pixels))))
+                                        
+                    if len(self.acquired_pixels) % 5 == 1:
+                        take_screen_shot(screen)
                 
                     self.assign_next_target((self.cur_x, self.cur_y), False)
                     self.target_acquired = False
             
                 else:
-                    reward_acquire = 100 * dist_efficiency
+                    if cur_mode == ACQUIRE:
+                        reward = reward_acquire = 100 * move_efficiency
+                    else:
+                        if move_efficiency == 0:
+                            reward_hunt = -2
+                        else:
+                            reward_hunt = 50 * move_efficiency
+                        reward = reward_hunt
 
-                reward = reward_acquire
-
-            elif cur_mode == HUNT: 
-
+                if self.num_steps % 20000 == 0 or self.num_steps % 50000 == 1:
+                    print("***** new rcd *****")
+                    print("target dist:", target_dist)
+                    print("dt:", dt)
+                    print("mean dist deltas:", np.mean(self.target_deltas))
+                    print("std dist deltas:", np.std(self.target_deltas))
+                    print("ndt:", ndt)
+                    print("min obs dist:", min(sonar_dist_readings[:HUNT_NUM_SENSOR]))
+                    print("do:", do)
+                    print("mean obs dists:", np.mean(self.obstacle_dists))
+                    print("std obs dists:", np.std(self.obstacle_dists))
+                    print("ndo:", ndo)
+                    print("target dist ** 0.33:", target_dist**0.333)
+                    print("move eff:", move_efficiency)
+                    print("reward:", reward)
+        
         self.num_steps += 1
         clock.tick()
-
-        if cur_speed != 70:
+        
+        #if cur_speed != 70:
             #take_screen_shot(screen)
-            print(cur_speed)
+            #print(cur_speed)
 
-        return turn_state, speed_state, acquire_state, reward, cur_speed, reward_turn, reward_acquire, reward_speed
+        return turn_state, speed_state, acquire_state, hunt_state, reward, cur_speed, reward_turn, reward_acquire, reward_speed, reward_hunt
     
     # ***** turn and speed model functions *****
     
@@ -390,9 +458,9 @@ class GameState:
             if x < 0 or x > width or y < 0 or y > height:
                 cat.position = int(width/2), int(height/2)
     
-    def car_is_crashed(self, sonar_readings):
+    def car_is_crashed(self, sonar_dist_readings):
         return_val = False
-        for reading in sonar_readings:
+        for reading in sonar_dist_readings:
             if reading <= 1:
                 return_val = True
         return return_val
@@ -415,15 +483,9 @@ class GameState:
                     pygame.display.flip()
                 clock.tick()
 
-    def sum_readings(self, sonar_readings):
-        """sum the non-zero readings"""
-        tot = 0
-        for i in sonar_readings:
-            tot += i
-        return tot
-
-    def get_sonar_readings(self, x, y, angle):
-        sonar_readings = []
+    def get_sonar_dist_color_readings(self, x, y, angle):
+        sonar_dist_readings = []
+        sonar_color_readings = []
         """
         sonar readings return N "distance" readings, one for each sonar. distance is
         a count of the first non-zero color detection reading starting at the object.
@@ -439,20 +501,27 @@ class GameState:
         arm_7 = arm_1
         
         # rotate arms to get vector of readings
-        sonar_readings.append(self.get_arm_distance(arm_1, x, y, angle, 0))
-        sonar_readings.append(self.get_arm_distance(arm_2, x, y, angle, 0.6))
-        sonar_readings.append(self.get_arm_distance(arm_3, x, y, angle, -0.6))
-        sonar_readings.append(self.get_arm_distance(arm_4, x, y, angle, 1.2))
-        sonar_readings.append(self.get_arm_distance(arm_5, x, y, angle, -1.2))
-        sonar_readings.append(self.get_arm_distance(arm_6, x, y, angle, 2.8))
-        sonar_readings.append(self.get_arm_distance(arm_7, x, y, angle, -2.8))
+        d, c = self.get_arm_dist_color(arm_1, x, y, angle, 0)
+        sonar_dist_readings.append(d); sonar_color_readings.append(c)
+        d, c = self.get_arm_dist_color(arm_2, x, y, angle, 0.6)
+        sonar_dist_readings.append(d); sonar_color_readings.append(c)
+        d, c = self.get_arm_dist_color(arm_3, x, y, angle, -0.6)
+        sonar_dist_readings.append(d); sonar_color_readings.append(c)
+        d, c = self.get_arm_dist_color(arm_4, x, y, angle, 1.2)
+        sonar_dist_readings.append(d); sonar_color_readings.append(c)
+        d, c = self.get_arm_dist_color(arm_5, x, y, angle, -1.2)
+        sonar_dist_readings.append(d); sonar_color_readings.append(c)
+        d, c = self.get_arm_dist_color(arm_6, x, y, angle, 2.8)
+        sonar_dist_readings.append(d); sonar_color_readings.append(c)
+        d, c = self.get_arm_dist_color(arm_7, x, y, angle, -2.8)
+        sonar_dist_readings.append(d); sonar_color_readings.append(c)
         
         if show_sensors:
             pygame.display.update()
 
-        return sonar_readings
+        return sonar_dist_readings, sonar_color_readings
 
-    def get_arm_distance(self, arm, x, y, angle, offset):
+    def get_arm_dist_color(self, arm, x, y, angle, offset):
         # count arm length to nearest obstruction
         i = 0
 
@@ -465,19 +534,20 @@ class GameState:
             
             # return i if rotated point is off screen
             if rotated_p[0] <= 0 or rotated_p[1] <= 0 or rotated_p[0] >= width or rotated_p[1] >= height:
-                return i
+                return i, 1 # 1 is wall color
             else:
                 obs = screen.get_at(rotated_p)
                 # this gets the color of the pixel at the rotated point
-                if self.get_track_or_not(obs) != 0:
+                obs_color = self.get_track_or_not(obs)
+                if obs_color != 0:
                     # if pixel not a safe color, return distance
-                    return i
+                    return i, obs_color
 
             # plots the individual sonar point on the screen
             if show_sensors:
                 pygame.draw.circle(screen, (255, 255, 255), (rotated_p), 2)
 
-        return i
+        return i, 0 # 0 is safe color
 
     def make_sonar_arm(self, x, y):
         spread = 10  # gap between points on sonar arm
@@ -510,7 +580,12 @@ class GameState:
             reading == pygame.color.THECOLORS[ACQUIRED_PIXEL_COLOR]:
             return 0
         else:
-            return 1
+            if reading == pygame.color.THECOLORS[WALL_COLOR]:
+                return 1
+            elif reading == pygame.color.THECOLORS[CAT_COLOR]:
+                return 2
+            elif reading == pygame.color.THECOLORS[OBSTACLE_COLOR]:
+                return 3
 
     # ***** target and acquire model functions *****
 
@@ -537,7 +612,7 @@ class GameState:
 
         return num_pxl_x_dir, num_pxl_y_dir
 
-    def assign_next_target(self,last_xy, first_iter):
+    def assign_next_target(self, last_xy, first_iter):
         
         # clear the path surface
         path_grid.fill(pygame.color.THECOLORS[BACK_COLOR])

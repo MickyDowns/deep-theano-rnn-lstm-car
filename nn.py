@@ -100,6 +100,35 @@ def acquire_net(num_inputs, params, num_outputs, load=''):
     
     return model
 
+def hunt_net(num_inputs, params, num_outputs, load=''):
+    model = Sequential()
+    
+    # First layer.
+    model.add(Dense(params[0], init='lecun_uniform', input_shape=(num_inputs,)))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.3))
+    
+    # Second layer.
+    model.add(Dense(params[1], init='lecun_uniform'))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.3))
+    
+    # Third layer.
+    model.add(Dense(params[2], init='lecun_uniform'))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.3))
+    
+    # Output layer.
+    model.add(Dense(num_outputs, init='lecun_uniform'))
+    model.add(Activation('linear'))
+    
+    rms = RMSprop()
+    model.compile(loss='mse', optimizer=rms)
+    
+    if load:
+        model.load_weights(load)
+    
+    return model
 
 def tbd_net(num_inputs, params, num_outputs, load=''):
     model = Sequential()
