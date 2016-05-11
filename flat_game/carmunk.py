@@ -30,9 +30,9 @@ from math import atan2, degrees, pi, sqrt
 # operating modes drive neural net training
 HUNT = 1
 TURN = 2
-SPEED = 3
+AVOID = 3
 ACQUIRE = 4
-cur_mode = TURN
+cur_mode = HUNT
 
 # PyGame init
 width = 1000
@@ -52,15 +52,16 @@ OBSTACLE_COLOR = "purple"
 CAT_COLOR = "orange"
 CAR_BODY_DIAM = 12
 SONAR_ARM_LEN = 20
-show_sensors = False # Showing sensors and redrawing slows things down.
-draw_screen = False
+show_sensors = True # Showing sensors and redrawing slows things down.
+draw_screen = True
+record_video = False
 
 # turn model settings
 TURN_NUM_SENSOR = 5 # front five sonar distance readings
 
-# speed model settings
-SPEED_NUM_SENSOR = 7 # front five, rear two sonar
-SPEEDS = [0,30,50,70]
+# avoid model settings
+AVOID_NUM_SENSOR = 7 # seven sonar distance + color readings
+SPEEDS = [30,50,70]
 
 # acquire model settngs
 target_grid = pygame.Surface((width, height), pygame.SRCALPHA, 32)
@@ -68,9 +69,14 @@ target_grid.convert_alpha()
 ACQUIRE_PIXEL_COLOR = "green"
 ACQUIRED_PIXEL_COLOR = "yellow"
 ACQUIRE_PIXEL_SIZE = 2
-ACQUIRE_PIXEL_SEPARATION = 25
-ACQUIRE_MARGIN = 50
-TARGET_RADIUS = 2
+
+if cur_mode == ACQUIRE:
+    ACQUIRE_PIXEL_SEPARATION = 25
+    ACQUIRE_MARGIN = 50
+else:
+    ACQUIRE_PIXEL_SEPARATION = 5
+    ACQUIRE_MARGIN = 75
+
 path_grid = pygame.Surface((width, height))
 PATH_COLOR = "grey"
 
@@ -116,25 +122,21 @@ class GameState:
             s.color = THECOLORS[WALL_COLOR] # 'red'
         self.space.add(static)
         
-        if cur_mode in [TURN, SPEED, HUNT]:
+        if cur_mode in [TURN, AVOID, HUNT]:
 
-            # create slow, randomly moving, larger obstacles
             self.obstacles = []
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-100),50)) # was 100
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-70),50)) # was 100
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-70),63)) # was 125
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                    random.randint(70, height-70),63)) # was 125
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                    random.randint(70, height-70),30)) # was 35
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                    random.randint(70, height-70),30)) # was 35
+            self.cats = []
+            
+            #if cur_mode in [TURN, AVOID]:
+            # create slow, randomly moving, larger obstacles
+            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-100),50)) # was 100
+            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-70),50)) # was 100
+            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-70),63)) # was 125
+            self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),63)) # was 125
+            self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),30)) # was 35
+            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),  random.randint(70, height-70),30)) # was 35
         
             # create faster, randomly moving, smaller obstacles a.k.a. "cats"
-            self.cats = []
             self.cats.append(self.create_cat(width-950,height-100))
             self.cats.append(self.create_cat(width-50,height-600))
             self.cats.append(self.create_cat(width-50,height-100))
@@ -142,6 +144,7 @@ class GameState:
 
         if cur_mode in [ACQUIRE, HUNT]:
             # set up seach grid and feed first target
+            self.target_radius = 10
             self.target_pixels = []
             self.current_target = (0,0)
             self.acquired_pixels = []
@@ -162,7 +165,7 @@ class GameState:
     def frame_step(self, cur_mode, turn_action, speed_action, cur_speed, car_distance):
         
         # plot move based on current (active) model prediction
-        if cur_mode in [TURN, SPEED, ACQUIRE, HUNT]:
+        if cur_mode in [TURN, AVOID, ACQUIRE, HUNT]:
             # action == 0 is continue current trajectory
             if turn_action == 1:  # slight right adjust to current trajectory
                 self.car_body.angle -= .2
@@ -173,22 +176,21 @@ class GameState:
             elif turn_action == 4:  # hard left
                 self.car_body.angle += .4
         
-        if cur_mode in [SPEED, HUNT]: # setting speed valued directly see SPEEDS
-            # action == 0 is no speed change
-            if speed_action == 1: # stop
+        if cur_mode in [AVOID, HUNT]: # setting speed value directly see SPEEDS
+            if speed_action == 0: # 0 or 30
                 cur_speed = SPEEDS[0]
-            elif speed_action == 2: # 30
+            elif speed_action == 1: # 30 or 50
                 cur_speed = SPEEDS[1]
-            elif speed_action == 3: # 50
+            elif speed_action == 2: # 50 or 70
                 cur_speed = SPEEDS[2]
-            elif speed_action == 4: # 70
-                cur_speed = SPEEDS[3]
+            #elif speed_action == 3: # 70
+            #    cur_speed = SPEEDS[3]
         
         # effect move by applying speed and direction as vector on self
         driving_direction = Vec2d(1, 0).rotated(self.car_body.angle)
         self.car_body.velocity = cur_speed * driving_direction
         
-        if cur_mode in [TURN, SPEED, HUNT]:
+        if cur_mode in [TURN, AVOID, HUNT]:
             # move slow obstacles
             if self.num_steps % 20 == 0: # 20x slower than self
                 self.move_obstacles()
@@ -215,6 +217,8 @@ class GameState:
         self.space.step(1./10) # one pixel for every 10 SPEED
         if draw_screen:
             pygame.display.flip()
+        if record_video:
+            take_screen_shot(screen, "video")
 
         self.last_x = self.cur_x; self.last_y = self.cur_y
         self.cur_x, self.cur_y = self.car_body.position
@@ -225,9 +229,10 @@ class GameState:
         turn_readings = sonar_dist_readings[:TURN_NUM_SENSOR]
         turn_readings = turn_readings + sonar_color_readings[:TURN_NUM_SENSOR]
         
-        speed_readings = sonar_dist_readings[:SPEED_NUM_SENSOR]
-        speed_readings.append(turn_action)
-        speed_readings.append(cur_speed)
+        avoid_readings = sonar_dist_readings[:AVOID_NUM_SENSOR]
+        avoid_readings = avoid_readings + sonar_color_readings[:AVOID_NUM_SENSOR]
+        avoid_readings.append(turn_action)
+        avoid_readings.append(cur_speed)
 
         if cur_mode in [ACQUIRE, HUNT]:
             
@@ -269,18 +274,21 @@ class GameState:
             
             # postive distance delta indicates "closing" on the target
             ndt = (dt- np.mean(self.target_deltas)) / np.std(self.target_deltas)
+            #ndt = (dt) / np.std(self.target_deltas)
             
             # vs. obstacle avoidance
             do = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
             
             # positive distance delta indicates "avoiding" an obstacle
             ndo = (do - np.mean(self.obstacle_dists)) / np.std(self.obstacle_dists)
+            #ndo = (do) / np.std(self.obstacle_dists)
             
             if cur_mode == ACQUIRE:
-                move_efficiency = ndt / target_dist**0.333
+                acquire_move_efficiency = ndt / target_dist**0.333
                 # cubed root of the target distance... lessens effect of distance
             else:
-                move_efficiency = (ndt + (1.55 * ndo)) / target_dist**0.333
+                avoid_move_efficiency = ndo / target_dist**0.333
+                acquire_move_efficiency = ndt / target_dist**0.333
                 # balancing avoidance with acquisition
                 
             self.last_target_dist = target_dist
@@ -294,20 +302,21 @@ class GameState:
                 self.obstacle_dists.pop(0)
             
             # 4. if w/in reasonable distance, declare victory
-            if target_dist <= TARGET_RADIUS:
+            if target_dist <= self.target_radius:
                 print("************** target acquired ************")
                 self.target_acquired = True
                 #target_dist = 1
         
         if cur_mode == HUNT:
             hunt_readings = sonar_dist_readings[:HUNT_NUM_SENSOR]
+            hunt_readings = hunt_readings + sonar_color_readings[:HUNT_NUM_SENSOR]
             hunt_readings.append(target_dist)
             hunt_readings.append(heading_to_target)
 
         # build states
-        turn_state = speed_state = acquire_state = hunt_state = 0
+        turn_state = avoid_state = acquire_state = hunt_state = 0
         turn_state = np.array([turn_readings])
-        speed_state = np.array([speed_readings])
+        avoid_state = np.array([avoid_readings])
 
         if cur_mode in [ACQUIRE, HUNT]:
             acquire_state = np.array([[target_dist, heading_to_target]])
@@ -315,10 +324,10 @@ class GameState:
                 hunt_state = np.array([hunt_readings])
     
         # calculate rewards based on training mode(s) in effect
-        reward_turn = reward_speed = reward_acquire = reward_hunt = 0
+        reward = reward_turn = reward_avoid = reward_acquire = 0
         
-        if cur_mode == SPEED:
-            read = sonar_dist_readings[:SPEED_NUM_SENSOR]
+        if cur_mode == AVOID:
+            read = sonar_dist_readings[:AVOID_NUM_SENSOR]
         elif cur_mode == HUNT:
             read = sonar_dist_readings[:HUNT_NUM_SENSOR]
         else:
@@ -327,37 +336,37 @@ class GameState:
         if self.car_is_crashed(read):
             # car crashed when any reading == 1. note: change (sensor) readings as needed
             self.crashed = True
-            reward = -500
+            reward = reward_turn = reward_avoid = reward_acquire = -500
             if self.cur_x < 0 or self.cur_x > width or self.cur_y < 0 or self.cur_y > height:
                 self.car_body.position = int(width/2), int(height/2)
                 self.cur_x, self.cur_y = self.car_body.position
                 self.num_off_scrn += 1
                 print("off screen. total off screens", self.num_off_scrn)
-                reward = -1000
+                reward = reward_turn = reward_avoid = reward_acquire = -1000
             self.recover_from_crash(driving_direction)
             
         else:
             if cur_mode == TURN: # Rewards better spacing from objects
-                reward = reward_turn = min(sonar_dist_readings)
+                reward = reward_turn = min(sonar_dist_readings[:TURN_NUM_SENSOR])
 
-            elif cur_mode == SPEED: # rewards distance from objects and speed
-                reward = reward_speed = min(sonar_dist_readings)
-                #sd_speeds = np.std(SPEEDS)
-                #sd_dist = np.std(range(20))
+            elif cur_mode == AVOID: # rewards distance from objects and speed
+                #reward = reward_avoid = min(sonar_dist_readings[:AVOID_NUM_SENSOR])
+                sd_speeds = np.std(SPEEDS)
+                sd_dist = np.std(range(20))
             
-                #std_speed = cur_speed / sd_speeds
-                #std_dist = min(sonar_dist_readings[:TURN_NUM_SENSOR]) / sd_dist
+                std_speed = cur_speed / sd_speeds
+                std_dist = min(sonar_dist_readings[:TURN_NUM_SENSOR]) / sd_dist
             
-                #std_max_speed = max(SPEEDS) / sd_speeds
-                #std_max_dist = SONAR_ARM_LEN / sd_dist
+                std_max_speed = max(SPEEDS) / sd_speeds
+                std_max_dist = SONAR_ARM_LEN / sd_dist
             
-                #reward_speed = ((std_speed * std_dist) +
-                #               ((std_max_speed - std_speed) * (std_max_dist - std_dist)))
+                reward = reward_avoid = ((std_speed * std_dist) +
+                                         ((std_max_speed - std_speed) * (std_max_dist - std_dist)))
 
             elif cur_mode in [ACQUIRE, HUNT]: # rewards moving in the right direction and acquiring pixels
                 if self.target_acquired == True:
                 
-                    reward = reward_acquire = reward_hunt = 1000
+                    reward_avoid = reward_acquire = 1000
                 
                     # remove acquired pixel
                     self.acquired_pixels.append(self.current_target)
@@ -365,48 +374,87 @@ class GameState:
                     print("pct complete:", (len(self.acquired_pixels) /
                                         (len(self.acquired_pixels) + len(self.target_pixels))))
                                         
-                    if len(self.acquired_pixels) % 5 == 1:
-                        take_screen_shot(screen)
+                    if len(self.acquired_pixels) % 50 == 1:
+                        take_screen_shot(screen, "snap")
                 
                     self.assign_next_target((self.cur_x, self.cur_y), False)
                     self.target_acquired = False
             
                 else:
                     if cur_mode == ACQUIRE:
-                        reward = reward_acquire = 100 * move_efficiency
-                    else:
-                        if move_efficiency == 0:
-                            reward_hunt = -2
-                        else:
-                            reward_hunt = 50 * move_efficiency
-                        reward = reward_hunt
+                        reward_acquire = 100 * acquire_move_efficiency
+                    elif cur_mode == HUNT:
+                        reward_acquire = 50 * acquire_move_efficiency
+                        reward_avoid = 50 * avoid_move_efficiency
 
-                if self.num_steps % 20000 == 0 or self.num_steps % 50000 == 1:
-                    print("***** new rcd *****")
-                    print("target dist:", target_dist)
-                    print("dt:", dt)
-                    print("mean dist deltas:", np.mean(self.target_deltas))
-                    print("std dist deltas:", np.std(self.target_deltas))
-                    print("ndt:", ndt)
-                    print("min obs dist:", min(sonar_dist_readings[:HUNT_NUM_SENSOR]))
-                    print("do:", do)
-                    print("mean obs dists:", np.mean(self.obstacle_dists))
-                    print("std obs dists:", np.std(self.obstacle_dists))
-                    print("ndo:", ndo)
-                    print("target dist ** 0.33:", target_dist**0.333)
-                    print("move eff:", move_efficiency)
-                    print("reward:", reward)
+                if cur_mode == HUNT:
+                    if self.num_steps % 10000 == 0 or self.num_steps % 10000 == 1:
+                        print("***** reward calcs *****")
+                        print("step counter:",self.num_steps)
+                        print("target dist:", target_dist)
+                        print("dt:", dt)
+                        print("mean dist deltas:", np.mean(self.target_deltas))
+                        print("std dist deltas:", np.std(self.target_deltas))
+                        print("ndt:", ndt)
+                        print("min obs dist:", min(sonar_dist_readings[:HUNT_NUM_SENSOR]))
+                        print("do:", do)
+                        print("mean obs dists:", np.mean(self.obstacle_dists))
+                        print("std obs dists:", np.std(self.obstacle_dists))
+                        print("ndo:", ndo)
+                        print("target dist ** 0.33:", target_dist**0.333)
+                        print("acq move eff:", acquire_move_efficiency)
+                        print("acq reward:", reward_acquire)
+                        print("avd move eff:", avoid_move_efficiency)
+                        print("avd reward:", reward_avoid)
+
+
+                    if self.num_steps == 2000:
+                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),30)) # was 35
+                        self.target_radius -= 1
+
+                    if self.num_steps == 4000:
+                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),  random.randint(70, height-70),30)) # was 35
+                        self.target_radius -= 1
+
+                    if self.num_steps == 6000:
+                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-70),50)) # was 100
+                        self.target_radius -= 1
+
+                    if self.num_steps == 8000:
+                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-100),50)) # was 100
+                        self.target_radius -= 1
+
+                    if self.num_steps == 10000:
+                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.   randint(70, height-70),63)) # was 125
+                        self.target_radius -= 1
+
+                    if self.num_steps == 12000:
+                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),63)) # was 125
+                        self.target_radius -= 1
+                            
+                    if self.num_steps == 14000:
+                        self.cats.append(self.create_cat(width-950,height-100))
+                        self.target_radius -= 1
+                        
+                    if self.num_steps == 16000:
+                        self.cats.append(self.create_cat(width-50,height-600))
+
+                    if self.num_steps == 18000:
+                        self.cats.append(self.create_cat(width-50,height-100))
+                        
+                    if self.num_steps == 20000:
+                        self.cats.append(self.create_cat(width-50,height-600))
         
         self.num_steps += 1
         clock.tick()
         
         #if cur_speed != 70:
-            #take_screen_shot(screen)
+            #take_screen_shot(screen, "snap")
             #print(cur_speed)
 
-        return turn_state, speed_state, acquire_state, hunt_state, reward, cur_speed, reward_turn, reward_acquire, reward_speed, reward_hunt
+        return turn_state, avoid_state, acquire_state, hunt_state, reward, cur_speed, reward_turn, reward_acquire, reward_avoid
     
-    # ***** turn and speed model functions *****
+    # ***** turn and avoid model functions *****
     
     def create_obstacle(self, x, y, r):
         c_body = pymunk.Body(pymunk.inf, pymunk.inf)
@@ -443,20 +491,22 @@ class GameState:
     
     def move_obstacles(self):
         # randomly moves large, slow obstacles around
-        for obstacle in self.obstacles:
-            speed = random.randint(10, 15)
-            direction = Vec2d(1, 0).rotated(self.car_body.angle + random.randint(-2, 2))
-            obstacle.velocity = speed * direction
+        if len(self.obstacles) > 0:
+            for obstacle in self.obstacles:
+                speed = random.randint(10, 15)
+                direction = Vec2d(1, 0).rotated(self.car_body.angle + random.randint(-2, 2))
+                obstacle.velocity = speed * direction
 
     def move_cats(self):
         # randomly moves small, fast obstacles
-        for cat in self.cats:
-            speed = random.randint(60, 80)
-            direction = Vec2d(1, 0).rotated(random.randint(-3, 3)) # -2,2
-            cat.velocity = speed * direction
-            x, y = cat.position
-            if x < 0 or x > width or y < 0 or y > height:
-                cat.position = int(width/2), int(height/2)
+        if len(self.cats) > 0:
+            for cat in self.cats:
+                speed = random.randint(60, 80)
+                direction = Vec2d(1, 0).rotated(random.randint(-3, 3)) # -2,2
+                cat.velocity = speed * direction
+                x, y = cat.position
+                if x < 0 or x > width or y < 0 or y > height:
+                    cat.position = int(width/2), int(height/2)
     
     def car_is_crashed(self, sonar_dist_readings):
         return_val = False
@@ -586,6 +636,8 @@ class GameState:
                 return 2
             elif reading == pygame.color.THECOLORS[OBSTACLE_COLOR]:
                 return 3
+            else:
+                return 1
 
     # ***** target and acquire model functions *****
 
@@ -689,13 +741,17 @@ class GameState:
 
 # ***** global functions *****
 
-def take_screen_shot(screen):
+def take_screen_shot(screen, type):
     time_taken = time.asctime(time.localtime(time.time()))
     time_taken = time_taken.replace(" ", "_")
     time_taken = time_taken.replace(":",".")
-    save_file = "screenshots/" + time_taken + ".jpeg"
+    if type == "snap":
+        save_file = "screenshots/" + time_taken + ".jpeg"
+        print("screen shot taken")
+    else:
+        save_file = "video/" + time_taken + ".jpeg"
+
     pygame.image.save(screen,save_file)
-    print("screen shot taken")
 
 # HOLD FOR CONVNET: down sample the image
 # pathSurf_scaled = pygame.transform.smoothscale(pathSurf,

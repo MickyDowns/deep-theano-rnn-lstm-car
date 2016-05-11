@@ -1,48 +1,61 @@
-# Building an intelligent search drone with reinforcement learning
+# Pack of Drones: Layered reinforcement learning for complex behaviors
 
 ## overview
 
-This project extends work begun by Matt Harvey in his Github repository entitled **Using reinforcement learning to train an autonomous vehicle to avoid obstacles** located here: https://github.com/harvitronix/reinforcement-learning-car. He trained an digital autonomous car to avoid obstacles using reinforcement learning. His ultimate goal is to embed the resulting neural network onto a chip and into a a car that will, hopefully, avoid his cats while cruising his house. I highly recommend his Medium posts on the topic beginning here: https://medium.com/@harvitronix/using-reinforcement-learning-in-python-to-teach-a-virtual-car-to-avoid-obstacles-6e782cc7d4c6. They were instrumental to my understanding of reinforcement learning and Q-Learning.
+I'm teaching my daughters about artificial intelligence. This project introduces key concepts around reinforcement learning, using sensor data, writing objective functions and network layering. The result, to this point, is a 2-D implementation of learning drones that:
 
-My challenge is similar to Matt's. However, I am building a drone. Aside from the obvious challenge of working in 3 dimensions, this drone must be able to perform some reasonably complex tasks. Specifically, I want it to search, locate and report the position of specific objects in its environment. It may be possible to perform these tasks using a deep, deep neural net. The folks at DeepMind (of Go fame) used Q-learning to train networks to win Atari games (https://t.co/liV9sJFoCp). However, there are two limitations to that approach from my perspective. First, providing a convnet a degraded (down-sampled) view of the entire environment is not realistic given my expected end-state environment (think of drones in houses, warehouses and caves). This drone needs to figure out it's environment by itself. Second, deep reinforcement networks often require tons of GPUs to train. I want a net that is capable of running (and training) on CPUs. Why? Because I want the drone itself to be capable of low-level learning and it's easier/cheaper to put a CPU in a drone than an expensive GPU.
+    *   Avoid: Turn, accelerate, decelerate to avoid obstacles
 
-This project is divided into three sections. This first section deals with training the base neural nets to work together in 2-space to perform a skeleton of the final objective. The second section will be to covert those models to work in three dimensions. The final section will be to embed the algorithms in a chip, on a drone. 
+    *   Acquire: Locate and touch a target object (pixels) in the environment
 
-The project technology is Python3, Pygame, Pymunk, Keras and Theano. See "installing" below to get started though be ready to do some problem solving as, given differences in environments, components like Pymunk and Pygame can be problematic. Further, working with Pygame is, frankly, challenging. So, I'll be specific about the process of traning the models and the results. So, even if you don't install and run the code, you'll understand the approach.
+    *   Hunt: Acquire target objects while avoiding obstacles
 
-## part 1: building 2-dimensional networks that work together
+    *   (IN PROCESS) Pack: Accelerate and improve hunt results by directing >1 drones
+
+Here's a video overview:
+    <iframe width="560" height="315" src="https://www.youtube.com/embed/WrLRGzbfeZc" frameborder="0" allowfullscreen></iframe>.
+
+It's possible to perform these tasks using a deep, deep neural net. The folks at DeepMind (of Go fame) used Q-learning to train networks to win Atari games (https://t.co/liV9sJFoCp). I have specifically avoided giving the drones a down-sampled, convnet view of the entire environment. Instead, they learn it thru exploration. I will eventually flash this network to real drones and want the learning to continue onboard, on CPU.
+
+This project extends work begun by Matt Harvey in his Github repository entitled **Using reinforcement learning to train an autonomous vehicle to avoid obstacles** located here: https://github.com/harvitronix/reinforcement-learning-car. He trained an digital autonomous car to avoid obstacles using reinforcement learning. His ultimate goal is to embed the resulting neural network onto a chip and into a a car that will, hopefully, avoid his cats while cruising his house. I highly recommend his Medium posts on the topic beginning here: https://medium.com/@harvitronix/using-reinforcement-learning-in-python-to-teach-a-virtual-car-to-avoid-obstacles-6e782cc7d4c6.
+
+## structure
+
+The project technology is Python3, Pygame, Pymunk, Keras and Theano. See "installing" below to get started though be ready to do some problem solving as, given differences in environments, components like Pymunk and Pygame can be problematic. Further, working with Pygame is challenging. I've extensively commented the code. So, even if you don't install and run the code, you'll understand the approach.
+
+### networks that work together in 2-D
 
 The first, 2-D, implementation of the models is accomplished through four, independently-trained neural networks in three categories of operation. They are:
 
-* avoid: A drone that is not in the air, because it hit a tree, a wall or a person isn't of much use. So, the first two neural networks enable the drone to avoid obstacles. 
+* avoid: A drone that is not in the air, because it hit a tree, a wall or a person, isn't of much use. So, the first two neural networks enable the drone to avoid obstacles. 
 
-    ** The first network trains the drone, that is moving at constant speed, to avoid both stationary and moving obstacles in, or headed into, its path. The input to this "turn" "neural network is a set of five sonar sensor readings the eminate from the front of the drone. The outputs are five turn actions including: going straight, turning right (2 levels), and turning left (2 levels). Its objective function is to avoid collisions by maximizing the length of its sensor readings. It receives mini rewards each time it does and looses rewards each time it crashes into an obstacle or a wall.
+    ** The first network trains a drone, that is moving at constant speed, to avoid stationary and moving obstacles. The input to this "turn" "neural network is a set of five sonar sensor readings that emanate from the front of the drone. The outputs are turn actions including: going straight, turning right (2 levels), and turning left (2 levels). Its objective function is to avoid collisions by maximizing the length of its sensor readings. It receives rewards for long readings and penalties for short readings (crashes).
 
-    ** The second network trains the drone to speed up or slow down to avoid obstacles. This "speed" "network is trained on-top of the "turn" network. That is, its input is the minimum distance measured by the afformentioned sonar sensors AND the turn decision of the "turn" model. So, it's learning about distances and speeds thru the experience of the lower model. It's output is one of five speed options: 30, 40, 50, 60, 70. Note: the default speed is 50. It's reward function is the 3-dimensional composite built on the two dimensions of speed and distance to obstacles picuted here:. If that's confusing, just think it's rewarded for going slow when objects are close and fast when objects are far.'
+    ** The second network trains the drone to speed up or slow down to avoid obstacles. This "speed" "network is trained on-top of the "turn" network. That is, its input is the minimum distance measured by the sonar sensors AND the turn decision of the "turn" model. So, it's learning about object distances and speeds in the context of turn decisions made by the lower model. It's output is one of four speed options: 0, 30, 50, 70. It's trained using a 3-dimensional objective function blending speed and distance from obstacles. Basically, it's rewarded for slowing down in traffic and speeding up on the open road.'
 
-    ** In the second part, when the challenge becomes 3-dimensional, I'll add a "height" model. Like the "speed" model it will be trained on top of the "turn" model.
+* acquire: 
 
-* search:
-
-    ** ??In the third part, when the challenge becomes real-world, I'll ad a "boundaries" model. It will be responsible for keeping the drone w/in a set of gps boundaries and to foce the drone to land outside thos boundaries.?? OR do you want it to self-identify the search area based on xtics and the boundaries based on distance from the origin. 
-
-        Note: realistically, this can be any arbitrary set of contditions so long as the result can be quantified and presented to the drone. 
-
-    ** The third network trains the drone to search a pre-defined area. Specifically, it is given a 1000x700 pixel total area and an 800x500 target search area. Its challenge is to locate the target search area and "touch" goals (pixels) dispersed over the search area to recieve rewards. Its input are the "coordinates" (each represented by a single pixel id serially asigned from the origin) of bonties and the status of bounties (0 for available, 1 for taken). It has three outputs: straight, left, right and a constant speed (25. )
+    ** The third network trains the drone to search a pre-defined surface (the 1000x700 pixel board) to locate and "touch" a target pixel. Its inputs are the target pixel "coordinates" i.e., a heading adjustment given the drone's current direction and distance. So, when it sees (-180, 150), it learns to turn around (until heading = 0), then travel forward 150 pixels. It has the same five "turn" model outputs (straight, 2 right, 2 left). Finally, it is rewarded for moving efficiently to and then acquiring the pixel. It is penalized for moving away from the pixel or crashing into the walls. 
         
-        Note: This approach decreases, but does not eliminate crashes. This model has no memory of wall locations, nore does it have  as the walls are not provided and it has no way of detecting them. However, to the extent it is successful in focusing it's steps on the center bounty area, crashes should decrease.'
+        Note: This approach decreases, but does not eliminate crashes. This model has no distance sensors and no memory of wall locations. However, to the extent it is successful in focusing it's path to the target in a straight, tight line, it avoids crashes.
 
-* synthecize:
+* hunt:
 
-    ** The fifth network pulls it all together selectively employing the four lower level networks to achieve the overall objective (searching the target area) while avoiding obstacles. The deepest network, it has x layers. It's inputs are: the turn instruction from the search network, the turn and speed instructions from the avoid networks, the distance to the nearest obstacle and the distance to the nearest goal. Its sole role is to select  instruction from the
+    ** The fourth network selectively employs the three lower level networks to achieve a complex "hunting" objective. It searches the target area acquiring target pixels while avoiding obstacles. It's inputs are the full array of sonar sensor readings (distance and object color), heading to target and distance to target. It's outputs are either the "acquire" or "avoid" networks (recall "avoid" is in turn a composite of "turn" and "speed" networks). That is, it selectively accepts on or the other's suggested action based on its appraisal of the inputs and it's objective function. That objective function is a normalized composite of defensive (avoiding obstacles) and offensive (acquiring target pixels) move efficiency. 
 
-## how it's implemented
+        Note: This model developed reasonably complex hunting behaviors incuding circling the target pixel to find the best angle of attack and a waiting for obstacles to clear its path before proceeding. 
 
-four key files. 
+### key files
 
-* carmunk handles game play. learning is link between game and net. provided imputs to and receives outputs from each (game play/carmunk). ...
+* learning.py: Trains the neural network based based on predictions/decisions, states and rewards. While it contains code to train each of the four networks, they are all trained in similar fashion. Some number of random training samples are generated and evaluated against the objective function. A "state" (of the game world) is generated for each sample move and it's efficacy is evaluated against the objective function for that network. These states are stacked (up to 100k), sampled and the submitted in microbatches of 100 to the nets for training. Gradually, the improve after seeing a variety of states with corresponding rewards. '"
 
-## key learnings
+* carmunk.py: Controls the game play. It receives drone turn and speed commands from learning.py and playing.py. It effects those moves in the game and returns a set of training mode-specific (e.g., turn, speed, acquire, hunt) states. Those states communicate key information about obstacle distances, crash states, rewards, etc. used in training the models. Look in this file if you want to know how the drone and obstacles work, how state is maintained and how rewards are calculated.
+
+* nn.py: Holds the network schema.
+
+* playing.py: Runs the trained neural networks receiving states from carmunk.py, getting predictions (turn and speed actions) using nn.py returning those to the game, etc.
+
+## learnings
 
 The coursework I've taken in statistical and computational methods have helped. However, in academic cases the dots are often pre-connected... you knew a positive outcome was possible. It was just a matter of figuring out how. That's not the case here. That gap was instructive for me. So, I'll pass along some of the key learnings:
 
@@ -53,7 +66,6 @@ The coursework I've taken in statistical and computational methods have helped. 
 * learning gain using frames
 
 map its environment, develop an search plan, then search its environment looking for specific objects. the environment using its camer  to search that environment, then to search the Further, I wanted the drone  had three distinct objectives. 'This project uses  
-
 
 
 ## to run for your first time
@@ -68,37 +80,3 @@ map its environment, develop an search plan, then search its environment looking
 5. Install Keras ```pip3 install keras```
 6. Upgrade Theanos ```pip3 install git+git://github.com/Theano/Theano.git --upgrade --no-deps```
 7. Install h5py for saving models ```pip3 install h5py```
-
-### Training
-
-First, you need to train a model. This will save weights to the `saved-models` folder. You can do this by running:
-
-`python3 learning.py`
-
-It can take anywhere from an hour to 36 hours to train a model, depending on the complexity of the network and the size of your sample. However, it will spit out weights every 25,000 frames, so you can move on to the next step in much less time.
-
-### Playing
-
-Edit the `nn.py` file to change the path name for the model you want to load. Sorry about this, I know it should be a command line argument.
-
-Then, watch the car drive itself around the obstacles!
-
-`python3 playing.py`
-
-That's all there is to it.
-
-### plotting
-
-Once you have a bunch of CSV files created via the learning, you can convert those into graphs by running:
-
-`python3 plotting.py`
-
-This will also spit out a bunch of loss and distance averages at the different parameters.
-
-## Credits
-
-I'm grateful to the following people and the work they did that helped me learn how to do this:
-
-- Deep learning to play Atari games: https://github.com/spragunr/deep_q_rl
-- Another deep learning project for video games: https://github.com/asrivat1/DeepLearningVideoGames
-- A great tutorial on reinforcement learning that a lot of my project is based on: http://outlace.com/Reinforcement-Learning-Part-3/
