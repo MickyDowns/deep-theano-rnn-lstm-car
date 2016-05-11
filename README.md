@@ -12,8 +12,7 @@ I'm teaching my daughters about artificial intelligence. This project introduces
 
     *   (IN PROCESS) Pack: Accelerate and improve hunt results by directing >1 drones
 
-Here's a video overview:
-    <iframe width="560" height="315" src="https://www.youtube.com/embed/WrLRGzbfeZc" frameborder="0" allowfullscreen></iframe>.
+Here's a video overview: [![layered reinforcement learning for complex behaviors](https://img.youtube.com/vi/WrLRGzbfeZc/0.jpg)](https://www.youtube.com/watch?v=WrLRGzbfeZc)
 
 It's possible to perform these tasks using a deep, deep neural net. The folks at DeepMind (of Go fame) used Q-learning to train networks to win Atari games (https://t.co/liV9sJFoCp). I have specifically avoided giving the drones a down-sampled, convnet view of the entire environment. Instead, they learn it thru exploration. I will eventually flash this network to real drones and want the learning to continue onboard, on CPU.
 
