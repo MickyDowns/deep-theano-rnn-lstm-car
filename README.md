@@ -34,21 +34,17 @@ The first, 2-D, implementation of the models is accomplished through four, indep
 
 * acquire: 
 
-    ** The third network trains the drone to search a pre-defined surface (the 1000x700 pixel board) to locate and "touch" a target pixel. Its inputs are the target pixel "coordinates" i.e., a heading adjustment given the drone's current direction and distance. So, when it sees (-180, 150), it learns to turn around (until heading = 0), then travel forward 150 pixels. It has the same five "turn" model outputs (straight, 2 right, 2 left). Finally, it is rewarded for moving efficiently to and then acquiring the pixel. It is penalized for moving away from the pixel or crashing into the walls. 
-        
-        Note: This approach decreases, but does not eliminate crashes. This model has no distance sensors and no memory of wall locations. However, to the extent it is successful in focusing it's path to the target in a straight, tight line, it avoids crashes.
+    ** The third network trains the drone to search a pre-defined surface (the 1000x700 pixel board) to locate and "touch" a target pixel. Its inputs are the target pixel "coordinates" i.e., a heading adjustment given the drone's current direction and distance. So, when it sees (-180, 150), it learns to turn around (until heading = 0), then travel forward 150 pixels. It has the same five "turn" model outputs (straight, 2 right, 2 left). Finally, it is rewarded for moving efficiently to and then acquiring the pixel. It is penalized for moving away from the pixel or crashing into the walls. Note: This approach decreases, but does not eliminate crashes. This model has no distance sensors and no memory of wall locations. However, to the extent it is successful in focusing its path to the target in a straight, tight line, it avoids walls.
 
 * hunt:
 
-    ** The fourth network selectively employs the three lower level networks to achieve a complex "hunting" objective. It searches the target area acquiring target pixels while avoiding obstacles. It's inputs are the full array of sonar sensor readings (distance and object color), heading to target and distance to target. It's outputs are either the "acquire" or "avoid" networks (recall "avoid" is in turn a composite of "turn" and "speed" networks). That is, it selectively accepts on or the other's suggested action based on its appraisal of the inputs and it's objective function. That objective function is a normalized composite of defensive (avoiding obstacles) and offensive (acquiring target pixels) move efficiency. 
-
-        Note: This model developed reasonably complex hunting behaviors incuding circling the target pixel to find the best angle of attack and a waiting for obstacles to clear its path before proceeding. 
+    ** The fourth network selectively employs the three lower level networks to achieve a complex "hunting" objective. It searches the target area acquiring target pixels while avoiding obstacles. Its inputs are the full array of sonar sensor readings (distance and object color), heading to target and distance to target. Its outputs are either the "acquire" or "avoid" networks (recall "avoid" is in turn a composite of "turn" and "speed" networks). It selectively accepts one or the other's suggested action based on its appraisal of the inputs and its objective function. That objective function is a normalized composite of defensive (avoiding obstacles) and offensive (acquiring target pixels) move efficiency. Note: This model developed reasonably complex hunting behaviors incuding circling the target pixel to find the best angle of attack and a waiting for obstacles to clear its path before proceeding. 
 
 ### key files
 
-* learning.py: Trains the neural network based based on predictions/decisions, states and rewards. While it contains code to train each of the four networks, they are all trained in similar fashion. Some number of random training samples are generated and evaluated against the objective function. A "state" (of the game world) is generated for each sample move and it's efficacy is evaluated against the objective function for that network. These states are stacked (up to 100k), sampled and the submitted in microbatches of 100 to the nets for training. Gradually, the improve after seeing a variety of states with corresponding rewards. '"
+* learning.py: Trains the neural network based based on predictions/decisions, states and rewards. While it contains code to train each of the four networks, they are all trained in similar fashion. Some number of random training samples are generated and evaluated against the objective function. A "state" (of the game world) is generated for each sample move and its efficacy is evaluated against the objective function for that network. These states are stacked (up to 100k), sampled and the submitted in microbatches of 100 to the nets for training. Gradually, they improve after seeing a variety of states with corresponding rewards.
 
-* carmunk.py: Controls the game play. It receives drone turn and speed commands from learning.py and playing.py. It effects those moves in the game and returns a set of training mode-specific (e.g., turn, speed, acquire, hunt) states. Those states communicate key information about obstacle distances, crash states, rewards, etc. used in training the models. Look in this file if you want to know how the drone and obstacles work, how state is maintained and how rewards are calculated.
+* carmunk.py: Controls the game play. It receives drone turn and speed commands from learning.py and playing.py. It effects those moves in the game and returns a set of training mode-specific (e.g., turn, speed, acquire, hunt) states. Those states communicate key information about obstacle distances, crashes, rewards, etc. used in training the models. Look in this file if you want to know how the drone and obstacles work, how state is maintained and how rewards are calculated.
 
 * nn.py: Holds the network schema.
 
@@ -56,15 +52,15 @@ The first, 2-D, implementation of the models is accomplished through four, indep
 
 ## learnings
 
-The coursework I've taken in statistical and computational methods have helped. However, in academic cases the dots are often pre-connected... you knew a positive outcome was possible. It was just a matter of figuring out how. That's not the case here. That gap was instructive for me. So, I'll pass along some of the key learnings:
+Coursework in statistical and computational methods helped here. However, in academic cases the dots are often pre-connected... you know a positive outcome is possible. That's not the case here. That gap was instructive for me. So, I'll pass along some of the key learnings:
 
-* importance of tight linkage between inputs (what the model sees/hears and is, therefore, capable of responding to), outputs (the levers the model controls to improve its performance), the objecive function, and the cost function (the deviation from the objective function). Think like a machine. What are you seeing. 
+* Importance of tight linkage between inputs, outputs, objecive function, and cost function. Seems obvious to say that the networks can only learn from stimuli they can observe, can only change levers they control, and can only improve if they understand what's valuable. So, when designing the network for a layer **think like a machine**. Would you know what lever to pull based on the incoming data stream and a numeric reward?
 
-* complexity breakthrough by choosing deeper network
+* **Frames speed learning.** The current networks do are not using LSTM (Long Short Term Memory). LSTM was specifically developed to enable networks to learn from prior experience. The networks used here have short term memory in that each prediction is based on joining states from the last two or three moves. This roughly halved training time. 
 
-* learning gain using frames
+* Run the **cost-benefit on network depth**. Initial "speed" and "hunt" models using two-hidden layers couldn't handle the complexity of a. reading sensors, b. reading lower model decisions, c. deciphering 3-D objective functions. Performance declined. Adding a third hidden layer enabled these models (at some cost to processing speed) to improve survivability. In contrast, 3 hidden layer "turn" and "acquire" models overfit the data. Increasing regularization in these models by a. dropping hidden layers and b. introducing dropout, improved survivability. 
 
-map its environment, develop an search plan, then search its environment looking for specific objects. the environment using its camer  to search that environment, then to search the Further, I wanted the drone  had three distinct objectives. 'This project uses  
+* **Use domain experience.** In a layered network like this the simplier the objective function at each layer the better chance you'll have of the layers working together. However, that's not always the case. The "speed" model was implemented first with a simple survival goal (i.e., same as turn: reward = min(sensor_lengths)), second with a more complex 3D goal for slowing in traffic. Given training < 700k frames, the more complex objective function significantly outperformed (2x) the simplier. 
 
 
 ## to run for your first time
@@ -73,7 +69,7 @@ map its environment, develop an search plan, then search its environment looking
 
 1. Clone this repo
 1. Install numpy ```pip3 install numpy```
-2. Install Pygame. I used these instructions: http://askubuntu.com/questions/401342/how-to-download-pygame-in-python3-3 but with ```pip3 install hg+http://bitbucket.org/pygame/pygame``` after I installed the dependencies
+2. Install Pygame. I used these instructions: http://askubuntu.com/questions/401342/how-to-download-pygame-in-python3-3 but with ```pip3 install hg+http://bitbucket.org/pygame/pygame```
 3. Install pymunk ```pip3 install pymunk```
 4. Update pymunk to python3 by CDing into its directory and running ```2to3 -w *.py```
 5. Install Keras ```pip3 install keras```
