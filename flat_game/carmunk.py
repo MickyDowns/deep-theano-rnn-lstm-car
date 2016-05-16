@@ -54,7 +54,6 @@ CAR_BODY_DIAM = 12
 SONAR_ARM_LEN = 20
 show_sensors = True # Showing sensors and redrawing slows things down.
 draw_screen = True
-record_video = False
 
 # turn model settings
 TURN_NUM_SENSOR = 5 # front five sonar distance readings
@@ -217,8 +216,6 @@ class GameState:
         self.space.step(1./10) # one pixel for every 10 SPEED
         if draw_screen:
             pygame.display.flip()
-        if record_video:
-            take_screen_shot(screen, "video")
 
         self.last_x = self.cur_x; self.last_y = self.cur_y
         self.cur_x, self.cur_y = self.car_body.position

@@ -2,58 +2,61 @@ from flat_game import carmunk
 import numpy as np
 import random
 import csv
-from nn import turn_net, speed_net, acquire_net, hunt_net, LossHistory
+from nn import turn_net, avoid_net, acquire_net, hunt_net, LossHistory
 import os.path
 import timeit
 import time
 
 # operating modes drive neural net training
 TURN = 1
-SPEED = 2
+AVOID = 2
 ACQUIRE = 3
 HUNT = 4
 PACK = 5
-cur_mode = SPEED
+cur_mode = PACK
 
 # turn model settings
 TURN_NUM_SENSOR = 10 # front five sonar distance and color readings
 TURN_NUM_OUTPUT = 5 # do nothing, two right turn, two left turn
-TURN_NUM_FRAME = 3
-TURN_NUM_INPUT = TURN_NUM_FRAME * TURN_NUM_SENSOR
+TURN_STATE_FRAMES = 3
+TURN_NUM_INPUT = TURN_STATE_FRAMES * TURN_NUM_SENSOR
 
 # speed model settings
-SPEED_NUM_SENSOR = 16 # seven sonar distance + color readings, turn action, current speed
-SPEED_NUM_OUTPUT = 5 # do nothing, stop, 30, 50, 70
-SPEED_NUM_FRAME = 3
-SPEED_NUM_INPUT = SPEED_NUM_FRAME * SPEED_NUM_SENSOR
-SPEEDS = [0,30,50,70]
+AVOID_NUM_SENSOR = 16 # seven sonar distance + color readings, turn action, current speed
+AVOID_NUM_OUTPUT = 3 # 30, 50, 70
+AVOID_STATE_FRAMES = 3
+AVOID_NUM_INPUT = AVOID_STATE_FRAMES * AVOID_NUM_SENSOR
+SPEEDS = [30,50,70]
 
 # acquire model settings
 ACQUIRE_NUM_SENSOR = 2 # distance, angle
 ACQUIRE_NUM_OUTPUT = 5 # nothing, 2 right turn, 2 left turn
-ACQUIRE_NUM_FRAME = 2
-ACQUIRE_NUM_INPUT = ACQUIRE_NUM_FRAME * ACQUIRE_NUM_SENSOR
+ACQUIRE_STATE_FRAMES = 2
+ACQUIRE_NUM_INPUT = ACQUIRE_STATE_FRAMES * ACQUIRE_NUM_SENSOR
 
 # hunt model settings
-HUNT_NUM_SENSOR = 9 # seven sonar distance, target distance, target heading
-# could go up to 12 incl turn action, speed action and acquire action
-HUNT_NUM_OUTPUT = 2 # speed (model), acquire (model)
-HUNT_NUM_FRAME = 3
-HUNT_NUM_INPUT = HUNT_NUM_FRAME * HUNT_NUM_SENSOR
+HUNT_AVOID = 0
+HUNT_ACQUIRE = 1
+HUNT_NUM_SENSOR = 16 # seven sonar distance + color, target distance + heading
+HUNT_NUM_OUTPUT = 2 # avoid (model), acquire (model)
+HUNT_STATE_FRAMES = 3
+HUNT_NUM_INPUT = HUNT_STATE_FRAMES * HUNT_NUM_SENSOR
 
 # pack model settings
-PACK_NUM_SENSOR = 14 # target distance + heading, five front sonar readings for each car
-PACK_HEADINGS = [(0,0), (0,0.5), (0.5,0), (0.5,0.5), (0,-0.5), (-0.5,0), (-0.5,-0.5)]
-# these are radian adjustments to first (lhs) and second (rhs) car headings. pos is left, neg in right.
-PACK_NUM_OUTPUT = len(PACK_HEADINGS)
-PACK_NUM_FRAME = 5
-PACK_NUM_INPUT = PACK_NUM_FRAME * PACK_NUM_SENSOR
+NUM_DRONES = 2
+PACK_NUM_SENSOR = 7 * NUM_DRONES # obstacle (compass) distances, HHT, target distance
+PACK_HEADING_ADJUST = [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(1,-1),(-1,1)]
+# these are radian adjustments to first (lhs) and second (rhs) to HTT. pos is left, neg in right.
+PACK_NUM_OUTPUT = len(PACK_HEADING_ADJUST)
+PACK_STATE_FRAMES = 5
+PACK_EVAL_FRAMES = 10
+PACK_NUM_INPUT = PACK_STATE_FRAMES * PACK_NUM_SENSOR
 
 # initial settings
 use_existing_model = False
 START_SPEED = 50
 START_TURN_ACTION = 0
-START_SPEED_ACTION = 0
+START_SPEED_ACTION = 1
 START_DISTANCE = 0
 
 # misc
@@ -61,7 +64,7 @@ GAMMA = 0.9  # Forgetting.
 TUNING = False  # If False, just use arbitrary, pre-selected params.
 
 def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
-              speed_model, acquire_model, acquire_model_30, acquire_model_50,
+              avoid_model, acquire_model, acquire_model_50, acquire_model_70,
               hunt_model, params):
     
     filename = params_to_filename(params)
@@ -77,8 +80,8 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
     buffer = params['buffer']
 
     # initialize variables and structures used below.
-    max_frame_ctr = frame_ctr = stop_ctr = speed_ctr = acquire_ctr = t = 0
-    cum_rwd = cum_rwd_turn = cum_rwd_speed = cum_rwd_acquire = cum_rwd_hunt = cum_speed = 0
+    max_frame_ctr = frame_ctr = stop_ctr = avoid_ctr = acquire_ctr = t = 0
+    cum_rwd = cum_rwd_turn = cum_rwd_acquire = cum_rwd_acquire = cum_rwd_hunt = cum_speed = 0
     data_collect = []
     replay = []  # stores tuples of (State, Action, Reward, New State').
     save_init = True
@@ -88,32 +91,34 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
     game_state = carmunk.GameState()
     
     # get initial state(s)
-    c1_turn_state, c1_speed_state, c1_acquire_state, c1_hunt_state, c1_cur_speed, c2_turn_state, c2_speed_state, c2_acquire_state, c2_hunt_state, c2_cur_speed, pack_state, reward = game_state.frame_step(cur_mode, START_TURN_ACTION, START_SPEED_ACTION, START_SPEED, START_DISTANCE)
+    turn_state, avoid_state, acquire_state, hunt_state, drone_state, reward, cur_speed = \
+        game_state.frame_step(cur_mode, START_TURN_ACTION, START_SPEED_ACTION,
+                              START_SPEED, START_DISTANCE)
 
-    if cur_mode in [TURN, SPEED, HUNT, PACK]:
+    if cur_mode in [TURN, AVOID, HUNT, PACK]:
         turn_state = state_frames(turn_state,
-                                  np.zeros((1, TURN_NUM_SENSOR * (TURN_NUM_FRAME - 1))),
-                                  TURN_NUM_SENSOR, TURN_NUM_FRAME)
+                                  np.zeros((1, TURN_NUM_SENSOR * (TURN_STATE_FRAMES - 1))),
+                                  TURN_NUM_SENSOR, TURN_STATE_FRAMES)
                                   
-        if cur_mode in [SPEED, HUNT, PACK]:
-            speed_state = state_frames(speed_state,
-                                       np.zeros((1, SPEED_NUM_SENSOR * (SPEED_NUM_FRAME - 1))),
-                                       SPEED_NUM_SENSOR, SPEED_NUM_FRAME)
+        if cur_mode in [AVOID, HUNT, PACK]:
+            avoid_state = state_frames(avoid_state,
+                                       np.zeros((1, AVOID_NUM_SENSOR * (avoid_state_FRAMES - 1))),
+                                       AVOID_NUM_SENSOR, avoid_state_FRAMES)
 
     if cur_mode in [ACQUIRE, HUNT, PACK]:
         acquire_state = state_frames(acquire_state,
-                                   np.zeros((1, ACQUIRE_NUM_SENSOR * (ACQUIRE_NUM_FRAME - 1))),
-                                   ACQUIRE_NUM_SENSOR, ACQUIRE_NUM_FRAME)
+                                   np.zeros((1, ACQUIRE_NUM_SENSOR * (ACQUIRE_STATE_FRAMES - 1))),
+                                   ACQUIRE_NUM_SENSOR, ACQUIRE_STATE_FRAMES)
 
     if cur_mode in [HUNT, PACK]:
         hunt_state = state_frames(hunt_state,
-                                  np.zeros((1, HUNT_NUM_SENSOR * (HUNT_NUM_FRAME - 1))),
-                                  HUNT_NUM_SENSOR, HUNT_NUM_FRAME)
+                                  np.zeros((1, HUNT_NUM_SENSOR * (HUNT_STATE_FRAMES - 1))),
+                                  HUNT_NUM_SENSOR, HUNT_STATE_FRAMES)
 
     if cur_mode == PACK:
         pack_state = state_frames(pack_state,
-                              np.zeros((1, PACK_NUM_SENSOR * (PACK_NUM_FRAME - 1))),
-                              PACK_NUM_SENSOR, PACK_NUM_FRAME)
+                                  np.zeros(1, PACK_NUM_SENSOR * (PACK_STATE_FRAMES - 1)),
+                                  PACK_NUM_SENSOR, PACK_STATE_FRAMES)
 
     # time it
     start_time = timeit.default_timer()
@@ -126,153 +131,120 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
         
         t += 1 # counts total training distance traveled
         frame_ctr += 1 # counts distance between crashes
-
-        # choose an action
-        speed_action = START_SPEED_ACTION
         
+        for drone_id in NUM_DRONES:
+            
+            speed_action = START_SPEED_ACTION
+            
+            # choose an action
+            if random.random() < epsilon or t < observe: # epsilon degrades over flips...
+                if cur_mode == TURN:
+                    turn_action = set_turn_action(cur_mode, True, cur_speed, turn_state)
+                else:
+                    turn_action = set_turn_action(cur_mode, False, cur_speed, turn_state)
         
-        # HAVE TO DO THIS FOR EACH ONE
-        if random.random() < epsilon or t < observe: # epsilon degrades over flips...
-            if cur_mode in [TURN, SPEED, HUNT, PACK]:
-                turn_action = np.random.randint(0, TURN_NUM_OUTPUT)
+                if cur_mode == AVOID:
+                    speed_action = set_avoid_action(cur_mode, True, avoid_state)
+                else:
+                    speed_action = set_avoid_action(cur_mode, False, avoid_state)
             
-            if cur_mode in [SPEED, HUNT, PACK]:
-                speed_state[0][14] = turn_action # ensures speed using current turn pred
-                speed_action = np.random.randint(0, SPEED_NUM_OUTPUT)
-            
-            if cur_mode in [ACQUIRE, HUNT, PACK]:
-                acquire_action = np.random.randint(0, ACQUIRE_NUM_OUTPUT)
                 if cur_mode == ACQUIRE:
-                    turn_action = acquire_action
-            
-            if cur_mode == PACK:
-                pack_state[0][7] = pack_action # ensures pack using current turn pred
-                pack_action = np.random.randint(0, SPEED_NUM_OUTPUT)
+                    turn_action = set_acquire_action(cur_mode, True, acquire_state)
+                else:
+                    turn_action = set_acquire_action(cur_mode, False, acquire_state)
 
+                if cur_mode == HUNT:
+                    hunt_action = set_hunt_action(cur_mode, True, hunt_state)
+                else:
+                    hunt_action = set_hunt_action(cur_mode, False, hunt_state)
+
+            else: # ...increasing use of predictions over time
+                if cur_mode == TURN:
+                    turn_action = set_turn_action(cur_mode, False, cur_speed, turn_state)
+                else:
+                    turn_action = set_turn_action(cur_mode, False, cur_speed, turn_state)
+                
+                if cur_mode == AVOID:
+                    speed_action = set_avoid_action(False, avoid_state)
+                else:
+                    speed_action = set_avoid_action(False, avoid_state)
+        
+                if cur_mode == ACQUIRE:
+                    turn_action = set_acquire_action(cur_mode, False, cur_speed, acquire_state)
+                else:
+                    turn_action = set_acquire_action(cur_mode, False, cur_speed, acquire_state)
+
+                if cur_mode == HUNT:
+                    hunt_action = set_hunt_action(False, turn_action, speed_action,
+                                                  acquire_action, hunt_state)
+                else:
+                    hunt_action = set_hunt_action(False, turn_action, speed_action,
+                                                  acquire_action, hunt_state)
+
+            # pass action, receive new state, reward
+            new_turn_state, new_avoid_state, new_acquire_state, new_hunt_state, new_drone_state, \
+                new_reward, new_speed = \
+                game_state.frame_step(cur_mode, turn_action, speed_action, cur_speed, frame_ctr)
+        
+            # append (horizontally) historical states for learning speed.
+            """ note: do this concatination even for models that are not learning (e.g., turn when running search or turn, search and acquire while running hunt) b/c their preds, performed above, expect the same multi-frame view that was in place when they trained."""
+            if cur_mode in [TURN, AVOID, HUNT, PACK]:
+                new_turn_state = state_frames(new_turn_state, turn_state,
+                                              TURN_NUM_SENSOR,TURN_STATE_FRAMES)
+        
+            if cur_mode in [AVOID, HUNT, PACK]:
+                new_acquire_state = state_frames(new_acquire_state, avoid_state,
+                                           AVOID_NUM_SENSOR,AVOID_STATE_FRAMES)
+        
+            if cur_mode in [ACQUIRE, HUNT, PACK]:
+                new_acquire_state = state_frames(new_acquire_state, acquire_state,
+                                             ACQUIRE_NUM_SENSOR, ACQUIRE_STATE_FRAMES)
 
             if cur_mode in [HUNT, PACK]:
-                hunt_action = np.random.randint(0, HUNT_NUM_OUTPUT)
-                    #if hunt_action == 0: # stop
-                    #turn_action = 0
-                    #speed_action = 4 # kludge, this sets speed to zero
-                    #stop_ctr += 1
-                
-                if hunt_action == 0: # accept speed model action
-                    turn_action = turn_action
-                    if cur_speed > 0:
-                        speed_action = speed_action # continue current speed
-                    else:
-                        speed_action = 2 # reset speed to 50, as you were stopped
-                    speed_ctr += 1
-                
-                elif hunt_action == 1: # accept acquire model action
-                    turn_action = acquire_action
-                    if cur_speed > 0:
-                        speed_action = 0 # continue current speed
-                    else:
-                        speed_action = 2 # reset speed to 50, as you were stopped
-                    acquire_ctr += 1
-    
-        else: # ...increasing use of predictions over time
-            if cur_mode == TURN:
-                turn_qval = turn_model.predict(turn_state, batch_size=1)
-                turn_action = (np.argmax(turn_qval))  # getting best prediction
-            
-            if cur_mode in [SPEED, HUNT, PACK]:
-                if cur_speed == SPEEDS[0]:
-                    turn_qval = turn_model_30.predict(turn_state, batch_size=1)
-                    # using turn 30 model as proxy when speed = 0?
-                elif cur_speed == SPEEDS[1]:
-                    turn_qval = turn_model_30.predict(turn_state, batch_size=1)
-                elif cur_speed == SPEEDS[2]:
-                    turn_qval = turn_model_50.predict(turn_state, batch_size=1)
-                elif cur_speed in [SPEEDS[3]]:
-                    turn_qval = turn_model_70.predict(turn_state, batch_size=1)
-                turn_action = (np.argmax(turn_qval))
-
-                speed_state[0][7] = turn_action
-                speed_qval = speed_model.predict(speed_state, batch_size=1)
-                speed_action = (np.argmax(speed_qval))
+                new_hunt_state = state_frames(new_hunt_state, hunt_state,
+                                          HUNT_NUM_SENSOR, HUNT_STATE_FRAMES)
 
             if cur_mode == PACK:
-
-            if cur_mode == ACQUIRE:
-                acquire_qval = acquire_model.predict(acquire_state, batch_size=1)
-                acquire_action = (np.argmax(acquire_qval))
-                turn_action = acquire_action
-
-            if cur_mode in [HUNT, PACK]:
-                if cur_speed in [SPEEDS[0], SPEEDS[1]]:
-                    acquire_qval = acquire_model_30.predict(acquire_state, batch_size=1)
-                elif cur_speed == SPEEDS[2]:
-                    acquire_qval = acquire_model_50.predict(acquire_state, batch_size=1)
-                else
-                    acquire_qval = acquire_model_3.predict(acquire_state, batch_size=1)
-
-                acquire_action = (np.argmax(acquire_qval))
-
-                hunt_qval = hunt_model.predict(hunt_state, batch_size=1)
-                hunt_action = (np.argmax(hunt_qval))
-
-                #if hunt_action == 0: # override prior decisions and stop
-                #   turn_action = 0
-                #   speed_action = 4
-                #    stop_ctr += 1
+                # pack state includes compass readings for multiple drones
+                # the state is built here, iteratively as each drone state is processed
+                if drone_id == 0: # first drone
+                    new_pack_state = new_drone_state
+                    pack_rwd = new_reward
                 
-                if hunt_action == 0: # accept speed model action
-                    turn_action = turn_action
-                    if cur_speed > 0:
-                        speed_action = speed_action # continue current speed
-                    else:
-                        speed_action = 2
-                    speed_ctr += 1
-                
-                elif hunt_action == 1: # accept acquire model action
-                    turn_action = acquire_action
-                    if cur_speed > 0:
-                        speed_action = 0 # continue current speed
-                    else:
-                        speed_action = 2 # reset speed to 50, as you were stopped
-                    acquire_ctr += 1
-        
-        # pass action, receive new state, reward
-        new_turn_state, new_speed_state, new_acquire_state, new_hunt_state, new_reward, new_speed, new_rwd_turn, new_rwd_acquire, new_rwd_speed, new_rwd_hunt = game_state.frame_step(cur_mode, turn_action, speed_action, cur_speed, frame_ctr)
-        
-        # append (horizontally) historical states for learning speed.
-        """ note: do this concatnation even for models that are not learning (e.g., turn when running search or turn, search and acquire while running hunt) b/c their preds, performed above, expect the same multi-frame view that was in place when they trained."""
-        if cur_mode in [TURN, SPEED, HUNT]:
-            new_turn_state = state_frames(new_turn_state, turn_state,
-                                          TURN_NUM_SENSOR,TURN_NUM_FRAME)
-        
-        if cur_mode in [SPEED, HUNT]:
-            new_speed_state = state_frames(new_speed_state, speed_state,
-                                           SPEED_NUM_SENSOR,SPEED_NUM_FRAME)
-        
-        if cur_mode in [ACQUIRE, HUNT]:
-            new_acquire_state = state_frames(new_acquire_state, acquire_state,
-                                             ACQUIRE_NUM_SENSOR, ACQUIRE_NUM_FRAME)
-
-        if cur_mode == HUNT:
-            new_hunt_state = state_frames(new_hunt_state, hunt_state,
-                                          HUNT_NUM_SENSOR, HUNT_NUM_FRAME)
+                else:
+                    new_pack_state = new_pack_state.append(new_drone_state)
+                    pack_rwd += new_reward
+                        
+                if drone_id == (NUM_DRONES - 1): # last drone
+                    new_pack_state = state_frames(new_pack_state, pack_state,
+                                                   NUM_DRONES * PACK_NUM_SENSOR, PACK_STATE_FRAMES)
+                    pack_rwd = pack_rwd / NUM_DRONES
 
         # experience replay storage
         """note: only the model being trained requires event storage as it is stack that will be sampled for training below."""
         if cur_mode == TURN:
             replay.append((turn_state, turn_action, new_reward, new_turn_state))
 
-        elif cur_mode == SPEED:
-            replay.append((speed_state, speed_action, new_reward, new_speed_state))
+        elif cur_mode == AVOID:
+            replay.append((avoid_state, speed_action, new_reward, new_acquire_state))
 
         elif cur_mode == ACQUIRE:
             replay.append((acquire_state, turn_action, new_reward, new_acquire_state))
 
         elif cur_mode == HUNT:
             replay.append((hunt_state, hunt_action, new_reward, new_hunt_state))
+
+        elif cur_mode == PACK:
+            if t % PACK_EVAL_FRAMES == 0:
+            # HOW ARE YOU GOING TO GENERATE THE RANDOM PACK ACTIONS USING COUNTER FROM ABOVE?
+            # 700k "training frames" is only 70k w/ 10:1 gearing
+                pack_action = set_pack_action(pack_state)
+                replay.append((pack_state, pack_action, pack_reward, new_pack_state))
+        
         #print(replay[-1])
 
         # If we're done observing, start training.
-        if t > observe:
+        if t > observe and t % PACK_EVAL_FRAMES == 0:
   
             # If we've stored enough in our buffer, pop the oldest.
             if len(replay) > buffer:
@@ -289,11 +261,11 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
                 turn_model.fit(X_train, y_train, batch_size=batchSize,
                                nb_epoch=1, verbose=0, callbacks=[history])
             
-            elif cur_mode == SPEED:
-                X_train, y_train = process_minibatch(minibatch, speed_model,
-                                                     SPEED_NUM_INPUT, SPEED_NUM_OUTPUT)
+            elif cur_mode == AVOID:
+                X_train, y_train = process_minibatch(minibatch, avoid_model,
+                                                     AVOID_NUM_INPUT, AVOID_NUM_OUTPUT)
                 history = LossHistory()
-                speed_model.fit(X_train, y_train, batch_size=batchSize,
+                avoid_model.fit(X_train, y_train, batch_size=batchSize,
                                nb_epoch=1, verbose=0, callbacks=[history])
 
             elif cur_mode == ACQUIRE:
@@ -314,24 +286,18 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
 
         # Update the starting state with S'.
         turn_state = new_turn_state
-        speed_state = new_speed_state
+        avoid_state = new_avoid_state
         acquire_state = new_acquire_state
         hunt_state = new_hunt_state
+        pack_state = new_pack_state
         cur_speed = new_speed
-        
-        # accumulations
-        cum_rwd += new_reward
-        cum_rwd_turn += new_rwd_turn
-        cum_rwd_acquire += new_rwd_acquire
-        cum_rwd_speed += new_rwd_speed
-        cum_rwd_hunt += new_rwd_hunt
-        cum_speed += cur_speed
 
-        # Decrement epsilon over time.
+        # accumulations / de-cumulations
         if epsilon > 0.1 and t > observe:
             epsilon -= (1/train_frames)
+        cum_rwd += new_reward
         
-        # We died, so update stuff.
+        # in case of crash, report and initialize
         if new_reward == -500 or new_reward == -1000:
             # Log the car's distance at this T.
             data_collect.append([t, frame_ctr])
@@ -345,34 +311,21 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
             fps = frame_ctr / tot_time
             
             # Output some stuff so we can watch.
-            print("Max: %d at %d\t eps: %f\t dist: %d\t rwd: %d\t turn: %d\t acq: %d\t spd: %d\t avg spd: %f\t hunt: %d\t fps: %d" %
-                  (max_frame_ctr, t, epsilon, frame_ctr, cum_rwd, cum_rwd_turn,
-                   cum_rwd_acquire, cum_rwd_speed, cum_speed / frame_ctr, cum_rwd_hunt, int(fps)))
+            print("Max: %d at %d\t eps: %f\t dist: %d\t mode: %c\t cum rwd: %d\t fps: %d" %
+                  (max_frame_ctr, t, epsilon, frame_ctr, cur_mode, cum_rwd, int(fps)))
 
             # Reset.
-            frame_ctr = 0
-            cum_rwd = 0
-            cum_rwd_turn = 0
-            cum_rwd_acquire = 0
-            cum_rwd_speed = 0
-            cum_rwd_hunt = 0
-            cum_speed = 0
+            frame_ctr = cum_rwd = cum_speed = 0
             start_time = timeit.default_timer()
-
-        # oversampling: tripling odds that success record is selected
-        #if cur_mode == ACQUIRE and new_reward == 1000:
-        #    replay.append((acquire_state, turn_action, new_reward, new_acquire_state))
-        #    replay.append((acquire_state, turn_action, new_reward, new_acquire_state))
 
         if t % 10000 == 0:
             if frame_ctr != 0:
-                print("t: %d\t eps: %f\t dist: %d\t rwd: %d\t turn: %d\t acq: %d\t spd: %d\t avg spd: %f\t hunt: %d" %
-                  (t, epsilon, frame_ctr, cum_rwd, cum_rwd_turn, cum_rwd_acquire,
-                   cum_rwd_speed, cum_speed / frame_ctr, cum_rwd_hunt))
+                print("Max: %d at %d\t eps: %f\t dist: %d\t mode: %c\t cum rwd: %d\t fps: %d" %
+                      (max_frame_ctr, t, epsilon, frame_ctr, cur_mode, cum_rwd, int(fps)))
 
-            if cur_mode == HUNT:
-                print("speed ctr:", speed_ctr, "acquire ctr:", acquire_ctr)
-                stop_ctr = speed_ctr = acquire_ctr = 0
+            #if cur_mode == HUNT:
+            #    print("speed ctr:", avoid_ctr, "acquire ctr:", acquire_ctr)
+            #    stop_ctr = avoid_ctr = acquire_ctr = 0
 
         # Save early turn_model, then every 20,000 frames
         if t % 50000 == 0:
@@ -382,10 +335,10 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
                                         str(START_SPEED) + '-' + str(t) + '.h5',overwrite=True)
                 print("Saving turn_model %s - %d - %d" % (filename, START_SPEED, t))
             
-            elif cur_mode == SPEED:
-                speed_model.save_weights('models/speed/speed-' + filename + '-' +
+            elif cur_mode == AVOID:
+                avoid_model.save_weights('models/avoid/avoid-' + filename + '-' +
                                          str(t) + '.h5', overwrite=True)
-                print("Saving speed_model %s - %d" % (filename, t))
+                print("Saving avoid_model %s - %d" % (filename, t))
             
             elif cur_mode == ACQUIRE:
                 acquire_model.save_weights('models/acquire/acquire-' + filename + '-' +
@@ -404,6 +357,96 @@ def train_net(turn_model, turn_model_30, turn_model_50, turn_model_70,
 
     # Log results after we're done all frames.
     log_results(filename, data_collect, loss_log)
+
+
+def turn_action(cur_mode, random_fl, cur_speed, turn_state):
+    if random_fl:
+        turn_action = np.random.randint(0, TURN_NUM_OUTPUT)
+    else:
+        if cur_mode == TURN:
+            turn_qval = turn_model.predict(turn_state, batch_size=1)
+            turn_action = (np.argmax(turn_qval))  # getting best prediction
+        else:
+            if cur_speed == SPEEDS[0]:
+                turn_qval = turn_model_30.predict(turn_state, batch_size=1)
+            elif cur_speed == SPEEDS[1]:
+                turn_qval = turn_model_50.predict(turn_state, batch_size=1)
+            elif cur_speed == SPEEDS[2]:
+                turn_qval = turn_model_70.predict(turn_state, batch_size=1)
+            turn_action = (np.argmax(turn_qval))
+        
+        return turn_action
+
+
+def set_avoid_action(random_fl, avoid_state):
+    if random_fl:
+        speed_action = np.random.randint(0, AVOID_NUM_OUTPUT)
+    else:
+        avoid_state[0][14] = turn_action # ensures AVOID using current turn pred
+        avoid_qval = avoid_model.predict(avoid_state, batch_size=1)
+        speed_action = (np.argmax(avoid_qval))
+            
+    return speed_action
+
+
+def set_acquire_action(cur_mode, random_fl, cur_speed, acquire_state)
+    if random_fl:
+        turn_action = np.random.randint(0, ACQUIRE_NUM_OUTPUT)
+    else:
+        if cur_mode == ACQUIRE:
+            acquire_qval = acquire_model.predict(acquire_state, batch_size=1)
+            turn_action = (np.argmax(acquire_qval))
+        else:
+            if cur_speed == SPEEDS[0]:
+                acquire_qval = acquire_model_50.predict(acquire_state, batch_size=1)
+            elif cur_speed == SPEEDS[1]:
+                acquire_qval = acquire_model_50.predict(acquire_state, batch_size=1)
+            else:
+                acquire_qval = acquire_model_70.predict(acquire_state, batch_size=1)
+            turn_action = (np.argmax(acquire_qval))
+        
+    return turn_action
+
+
+def set_hunt_action(random_fl, turn_action, speed_action, acquire_action, hunt_state)
+    if random_fl:
+        hunt_action = np.random.randint(0, HUNT_NUM_OUTPUT)
+        if hunt_action == HUNT_AVOID: # accept speed model action
+            turn_action = turn_action
+            if cur_speed > 0:
+                speed_action = speed_action # continue current speed
+            else:
+                speed_action = 1 # reset speed to 50, as you were stopped
+            #avoid_ctr += 1
+                
+        elif hunt_action == HUNT_ACQUIRE: # accept acquire model action
+            turn_action = acquire_action
+            if cur_speed > 0:
+                speed_action = 1 # just setting acquire speed to 50 for now
+            else:
+                speed_action = 1 # reset speed to 50, as you were stopped
+            #acquire_ctr += 1
+    else:
+        hunt_qval = hunt_model.predict(hunt_state, batch_size=1)
+        hunt_action = (np.argmax(hunt_qval))
+                    
+        if hunt_action == HUNT_AVOID: # accept avoid model action
+            turn_action = turn_action
+            if cur_speed > 0:
+                speed_action = speed_action # continue current speed
+            else:
+                speed_action = 1
+            #avoid_ctr += 1
+                    
+        elif hunt_action == HUNT_ACQUIRE: # accept acquire model action
+            turn_action = acquire_action
+            if cur_speed > 0:
+                speed_action = 1 # just setting acquire speed to 50 for now
+            else:
+                speed_action = 1 # reset acquire speed to 50, as you were stopped
+            #acquire_ctr += 1
+
+    return turn_action, speed_action
 
 
 def state_frames(new_state, old_state, num_sensor, num_frame):
@@ -505,9 +548,9 @@ def launch_learn(params):
         if cur_mode == TURN:
             turn_model = turn_net(NUM_INPUT, params['nn'])
             train_net(turn_model, 0, params)
-        elif cur_mode == SPEED:
-            speed_model = speed_net(NUM_INPUT, params['nn'])
-            train_net(0, speed_model, params)
+        elif cur_mode == AVOID:
+            avoid_model = avoid_net(NUM_INPUT, params['nn'])
+            train_net(0, avoid_model, params)
     
     else:
         print("Already tested.")
@@ -532,10 +575,10 @@ if __name__ == "__main__":
 
     else:
         turn_model = turn_model_30 = turn_model_50 = turn_model_70 = \
-        speed_model = acquire_model = acquire_model_30 = acquire_model_50 = \
+        avoid_model = acquire_model = acquire_model_30 = acquire_model_50 = \
         hunt_model = 0
         
-        if cur_mode in [TURN, SPEED, HUNT, PACK]:
+        if cur_mode in [TURN, AVOID, HUNT, PACK]:
             
             if cur_mode == TURN:
                 nn_param = [TURN_NUM_INPUT*25, TURN_NUM_INPUT*10]
@@ -554,18 +597,18 @@ if __name__ == "__main__":
                 turn_model_70 = turn_net(TURN_NUM_INPUT, [TURN_NUM_INPUT*25, TURN_NUM_INPUT*10],
                                          TURN_NUM_OUTPUT, saved_model)
 
-        if cur_mode in [SPEED, HUNT, PACK]:
+        if cur_mode in [AVOID, HUNT, PACK]:
                                      
-            if cur_mode == SPEED:
-                nn_param = [SPEED_NUM_INPUT * 25, SPEED_NUM_INPUT * 5, SPEED_NUM_INPUT]
+            if cur_mode == AVOID:
+                nn_param = [AVOID_NUM_INPUT * 25, AVOID_NUM_INPUT * 5, AVOID_NUM_INPUT]
                 params = {"batchSize": 100, "buffer": 50000, "nn": nn_param}
-                speed_model = speed_net(SPEED_NUM_INPUT, nn_param, SPEED_NUM_OUTPUT)
+                avoid_model = avoid_net(AVOID_NUM_INPUT, nn_param, AVOID_NUM_OUTPUT)
             
             else:
                 saved_model = 'models/speed/saved/speed-525-105-21-100-50000-600000.h5'
-                speed_model = speed_net(SPEED_NUM_INPUT,
-                                        [SPEED_NUM_INPUT * 25, SPEED_NUM_INPUT * 5, SPEED_NUM_INPUT],
-                                        SPEED_NUM_OUTPUT, saved_model)
+                avoid_model = avoid_net(AVOID_NUM_INPUT,
+                                        [AVOID_NUM_INPUT * 25, AVOID_NUM_INPUT * 5, AVOID_NUM_INPUT],
+                                        AVOID_NUM_OUTPUT, saved_model)
 
         if cur_mode in [ACQUIRE, HUNT, PACK]:
             
@@ -605,6 +648,6 @@ if __name__ == "__main__":
             params = {"batchSize": 100, "buffer": 50000, "nn": nn_param}
             pack_model = pack_net(PACK_NUM_INPUT, nn_param, PACK_NUM_OUTPUT)
 
-        train_net(turn_model, turn_model_30, turn_model_50, turn_model_70, speed_model,
+        train_net(turn_model, turn_model_30, turn_model_50, turn_model_70, avoid_model,
                   acquire_model, acquire_model_30, acquire_model_50, acquire_model_70,
                   hunt_model, pack_model, params)

@@ -24,7 +24,6 @@ from six.moves import cPickle as pickle
 from scipy import ndimage
 from PIL import Image
 from math import atan2, degrees, pi, sqrt
-import mogrify, mencoder
 
 # ***** initialize variables *****
 
@@ -48,43 +47,47 @@ clock = pygame.time.Clock()
 screen = pygame.display.set_mode((width, height))
 BACK_COLOR = "black"
 WALL_COLOR = "red"
-CAR_COLOR = "green"
+DRONE_COLOR = "green"
 SMILE_COLOR = "blue"
 OBSTACLE_COLOR = "purple"
 CAT_COLOR = "orange"
-CAR_BODY_DIAM = 12
+DRONE_BODY_DIAM = 12
 SONAR_ARM_LEN = 20
-show_sensors = False # Showing sensors and redrawing slows things down.
-draw_screen = False
+show_sensors = True # Showing sensors and redrawing slows things down.
+draw_screen = True
 
 # turn model settings
 TURN_NUM_SENSOR = 5 # front five sonar distance readings
 
 # speed model settings
 SPEED_NUM_SENSOR = 7 # front five, rear two sonar
-SPEEDS = [0,30,50,70]
+SPEEDS = [30,50,70]
 
 # acquire model settngs
 target_grid = pygame.Surface((width, height), pygame.SRCALPHA, 32)
 target_grid.convert_alpha()
-path_grid = pygame.Surface((width, height))
 ACQUIRE_PIXEL_COLOR = "green"
 ACQUIRED_PIXEL_COLOR = "yellow"
 ACQUIRE_PIXEL_SIZE = 2
-ACQUIRE_PIXEL_SEPARATION = 25
-ACQUIRE_MARGIN = 50
-TARGET_RADIUS = 2
-C1_PATH_COLOR = "grey"
+
+if cur_mode == ACQUIRE:
+    ACQUIRE_PIXEL_SEPARATION = 25
+    ACQUIRE_MARGIN = 50
+else:
+    ACQUIRE_PIXEL_SEPARATION = 5
+    ACQUIRE_MARGIN = 75
+
+path_grid = pygame.Surface((width, height))
+PATH_COLORS = ["light grey", "grey", "dark grey"]
 
 # hunt model settings
 HUNT_NUM_SENSOR = 7
 STATS_BUFFER = 2000
 
 # pack model settings
-C2_PATH_COLOR = "dark grey"
-
-# future
-DOWN_SAMPLE = 10
+NUM_DRONES = 2
+PACK_HEADING_ADJUST = [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(1,-1),(-1,1)]
+NUM_TARGETS = 1
 
 # Turn off alpha since we don't use it.
 screen.set_alpha(None)
@@ -93,20 +96,24 @@ screen.set_alpha(None)
 
 class GameState:
     def __init__(self):
-        # crash state
-        #self.c1_crashed = False
-
         # initialize space
         self.space = pymunk.Space()
         self.space.gravity = pymunk.Vec2d(0., 0.)
-
-        # create self a.k.a. "car"
-        self.create_car_1(width/2, height/2, 0.5)
-        self.c1_cur_x, self.c1_cur_y = self.c1_body.position
-
+        
         # initialize counters
         self.num_steps = 0
         self.num_off_scrn = 0
+        
+        # crash state
+        self.crashed = np.empty([NUM_DRONES, 1])
+        self.crashed.fill(False)
+
+        # create drones
+        self.drones = []
+        self.cur_x = self.cur_y = np.zeros([NUM_DRONES, 1])
+        for drone_id in NUM_DRONES:
+            self.drones.append(self.create_drone(width/2, height/2, 0.5))
+            self.cur_x[drone_id], self.cur_y[drone_id] = self.drones[drone_id].body.position
 
         # create walls
         static = [pymunk.Segment(self.space.static_body,(0, 1), (0, height), 1),
@@ -118,82 +125,73 @@ class GameState:
             s.friction = 1.
             s.group = 1
             s.collision_type = 1
-            s.color = THECOLORS[WALL_COLOR] # 'red'
+            s.color = THECOLORS[WALL_COLOR]
         self.space.add(static)
         
         if cur_mode in [TURN, SPEED, HUNT]:
-
+            
+            self.obstacles = self.cats = []
+            
+            #if cur_mode in [TURN, AVOID]: # used to gradually introduce obstacles
             # create slow, randomly moving, larger obstacles
-            self.obstacles = []
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-100),50)) # was 100
+                                                       random.randint(70, height-100),50))
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-70),50)) # was 100
+                                                       random.randint(70, height-70),50))
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                   random.randint(70, height-70),63)) # was 125
+                                                       random.randint(70, height-70),63))
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                    random.randint(70, height-70),63)) # was 125
+                                                       random.randint(70, height-70),63))
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                    random.randint(70, height-70),30)) # was 35
+                                                       random.randint(70, height-70),30))
             self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
-                                                    random.randint(70, height-70),30)) # was 35
+                                                       random.randint(70, height-70),30))
         
             # create faster, randomly moving, smaller obstacles a.k.a. "cats"
-            self.cats = []
             self.cats.append(self.create_cat(width-950,height-100))
             self.cats.append(self.create_cat(width-50,height-600))
             self.cats.append(self.create_cat(width-50,height-100))
             self.cats.append(self.create_cat(width-50,height-600))
 
         if cur_mode in [ACQUIRE, HUNT, PACK]:
+            # initialize last position values
+            self.last_x = np.empty([NUM_DRONES,1]); self.last_x.fill(width/2 + 1)
+            self.last_y = np.empty(NUM_DRONES,1); self.last_y.fill(height/2 +1)
+            
             # set up seach grid and feed first target
-            self.target_pixels = []
-            self.current_target = (0,0)
-            self.acquired_pixels = []
+            self.target_inventory = self.acquired_targets = []
+            self.target_radius = 5
             self.generate_targets(True)
-            self.c1_last_x = width/2 + 1
-            self.c1_last_y = height/2 +1
-            self.assign_next_target((self.c1_last_x, self.c1_last_y), True)
+            self.current_targets = []
+            for targets in NUM_TARGETS:
+                self.assign_target((self.last_x[0], self.last_y[0]), True)
             self.target_acquired = False
-            self.c1_last_tgt_dist = 350
-            self.c1_last_obs_dist = 10
-            self.c1_tgt_deltas = [0.4,0.5,0.6]
-            self.c1_obs_dists = [12,10]
+            
+            # initialize target distances
+            self.last_tgt_dist = np.empty([NUM_DRONES, NUM_TARGETS])
+            self.last_tgt_dist.fill(350)
+            self.tgt_deltas = np.empty([NUM_DRONES, NUM_TARGETS])
+            self.tgt_deltas.fill(0.5)
+            
+            # initialize obstacle distances
+            self.last_obs_dist = np.empty([NUM_DRONES, NUM_TARGETS])
+            self.last_obs_dist.fill(10)
+            self.obs_dists = np.empty([NUM_DRONES, NUM_TARGETS])
+            self.tgt_dists.fill(10)
+        
         """ note: while python assumes (0,0) is in the lower left of the screen, pygame assumes (0,0) in the upper left. therefore, y+ moves DOWN the y axis. here is example code that illustrates how to handle angles in that environment: https://github.com/mgold/Python-snippets/blob/master/pygame_angles.py. in this implementation, I have flipped the screen so that Y+ moves UP the screen."""
-    
-        if cur_mode == PACK:
-            self.obstacles = []
-            self.cats = []
-            # create a second car in exact same position as first
-            #self.c2_crashed = False
-            self.create_car_2(width/2, height/2, 0.5)
-            self.c2_cur_x, self.c2_cur_y = self.c2_body.position
-            self.c2_last_x = width/2 + 1
-            self.c2_last_y = height/2 +1
-            self.c2_last_tgt_dist = 350
-            self.c2_last_obs_dist = 10
-            self.c2_tgt_deltas = [0.4,0.5,0.6]
-            self.c2_obs_dists = [12,10]
-
 
     # ***** primary logic controller for game play *****
 
-    def frame_step(self, cur_mode, c1_turn_action, c1_speed_action, c1_cur_speed,
-                   c2_turn_action, c2_speed_action, c2_cur_speed, frame_ctr):
+    def frame_step(self, cur_mode, drone_id, turn_action, speed_action, pack_action, cur_speed, cum_distance):
         
-        # turn car based on current (active) model prediction
-        if cur_mode in [TURN, SPEED, ACQUIRE, HUNT, PACK]:
-            self.make_turn(c1_turn_action, self.c1_body)
-    
-        if cur_mode == PACK:
-            self.make_turn(c2_turn_action, self.c2_body)
+        # turn drone based on current (active) model prediction
+        if cur_mode in [TURN, AVOID, ACQUIRE, HUNT, PACK]:
+            self.set_turn(turn_action, self.drones[drone_id].body)
         
         # set speed based on active model prediction
-        if cur_mode in [SPEED, HUNT, PACK]: # setting speed values directly see SPEEDS
-            self.set_speed(c1_cur_speed, c1_speed_action, self.c1_body)
-        
-        if cur_mode == PACK:
-            self.set_speed(c2_cur_speed, c2_speed_action, self.c2_body)
+        if cur_mode in [AVOID, HUNT, PACK]: # setting speed values directly see SPEEDS
+            self.set_speed(cur_speed, speed_action, self.drones[drone_id].body)
     
         # move obstacles
         if cur_mode in [TURN, SPEED, HUNT, PACK]:
@@ -203,60 +201,48 @@ class GameState:
 
             # fast obstacles
             if self.num_steps % 40 == 0: # 40 x more stable than self
-                self.move_cats()
-       
-       # update the screen and surfaces
-        screen.fill(pygame.color.THECOLORS[BACK_COLOR])
+                self.move_cats
+        
+        # adjust heading based on pack model output
+        if cur_mode == PACK:
+            pack_heading_adjust = self.set_pack_adjust(pack_action)
+
+        # update the screen and surfaces
+        if drone_id == 0:
+            screen.fill(pygame.color.THECOLORS[BACK_COLOR])
         
         if cur_mode in [ACQUIRE, HUNT, PACK]:
+            # draw the path drone has taken on the path grid
+            pygame.draw.lines(path_grid, pygame.color.THECOLORS[PATH_COLORS[drone_id]], True,
+                              ((self.last_x[drone_id], height - self.last_y[drone_id]),
+                               (self.cur_x[drone_id], height - self.cur_y[drone_id])), 1)
             
-            # draw the path c1 has taken on the path grid
-            pygame.draw.lines(path_grid, pygame.color.THECOLORS[C1_PATH_COLOR], True,
-                              ((self.c1_last_x, height-self.c1_last_y),
-                               (self.c1_cur_x, height-self.c1_cur_y)), 1)
-                               
-            # daw the path c2 has taken
-            if cur_mode == PACK:
-                pygame.draw.lines(path_grid, pygame.color.THECOLORS[C2_PATH_COLOR], True,
-                                  ((self.c2_last_x, height-self.c2_last_y),
-                                   (self.c2_cur_x, height-self.c2_cur_y)), 1)
-            
-            # overlay the path, target surfaces on the screen
-            screen.blit(path_grid, (0,0))
-            screen.blit(target_grid, (0,0))
+            # if last drone, bind paths, targets to the screen
+            if drone_id == (NUM_DRONES - 1):
+                screen.blit(path_grid, (0,0))
+                screen.blit(target_grid, (0,0))
 
-        # display results to screen
-        draw(screen, self.space)
-        self.space.step(1./10) # one pixel for every 10 SPEED
-        if draw_screen:
-            pygame.display.flip()
+        # if last drone, display screen
+        if(drone_id == (NUM_DRONES - 1)):
+            draw(screen, self.space)
+            self.space.step(1./10) # one pixel for every 10 SPEED
+            if draw_screen:
+                pygame.display.flip()
 
         # get readings, build states
-        self.c1_last_x = self.c1_cur_x; self.c1_last_y = self.c1_cur_y
-        self.c1_cur_x, self.c1_cur_y = self.c1_body.position
+        self.last_x[drone_id] = self.cur_x[drone_id]
+        self.last_y[drone_id] = self.cur_y[drone_id]
+        self.cur_x[drone_id], self.cur_y[drone_id] = self.drones[drone_id].body.position
 
-        c1_turn_state, c1_speed_state, c1_acquire_state, c1_hunt_state, \
-            c1_pack_state, c1_min_sonar_dist, c1_move_efficiency = \
-            self.build_states(cur_mode, self.c1_cur_x, self.c1_cur_y, self.c1_body,
-                              c1_turn_action, c1_cur_speed, self.c1_last_tgt_dist,
-                              self.c1_target_deltas, self.c1_obs_dists)
-
-        if cur_mode == PACK:
-            self.c2_last_x = self.c2_cur_x; self.c2_last_y = self.c2_cur_y
-            self.c2_cur_x, self.c2_cur_y = self.c2_body.position
-            
-            c2_turn_state, c2_speed_state, c2_acquire_state, c2_hunt_state, \
-                c2_pack_state, c2_min_sonar_dist, c2_move_efficiency = \
-                self.build_states(cur_mode, self.c2_cur_x, self.c2_cur_y, self.c2_body,
-                                  c2_turn_action, c2_cur_speed, self.c2_last_tgt_dist,
-                                  self.c2_target_deltas, self.c2_obs_dists)
+        turn_state, avoid_state, acquire_state, hunt_state, min_sonar_dist, move_efficiency = \
+            self.build_states(cur_mode, drone_id, turn_action, cur_speed)
 
         # calculate rewards based on training mode(s) in effect
-        c1_turn_reward, c1_speed_reward, c1_acquire_reward, c1_hunt_reward = \
-            self.calculate_reward(cur_mode, c1_cur_x, c1_cur_y, self.c1_body,
-                                  c1_min_sonar_dist, c1_move_efficiency)
+        turn_reward, speed_reward, acquire_reward, hunt_reward, drone_reward = \
+            self.calculate_reward(cur_mode, cur_x, cur_y, self.c1_body,
+                                  min_sonar_dist, move_efficiency)
 
-        reward = max([c1_turn_reward, c1_speed_reward, c1_acquire_reward, c1_hunt_reward])
+        reward = max([turn_reward, speed_reward, acquire_reward, hunt_reward])
 
         if cur_mode == PACK:
             c2_turn_reward, c2_speed_reward, c2_acquire_reward, c2_hunt_reward, c2_reward_pack = \
@@ -272,9 +258,7 @@ class GameState:
             #take_screen_shot(screen)
             #print(c1_cur_speed)
 
-        return c1_turn_state, c1_speed_state, c1_acquire_state, c1_hunt_state, c1_cur_speed, \
-            c2_turn_state, c2_speed_state, c2_acquire_state, c2_hunt_state, c2_cur_speed, reward
-                
+        return turn_state, avoid_state, acquire_state, hunt_state, drone_state, reward, cur_speed
                 
     
     # ***** turn and speed model functions *****
@@ -302,30 +286,18 @@ class GameState:
         return cat_body
     
     
-    def create_car_1(self, x, y, r):
+    def create_drone(self, x, y, r):
         inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
-        self.c1_body = pymunk.Body(1, inertia)
-        self.c1_body.position = x, y
-        self.c1_shape = pymunk.Circle(self.c1_body, CAR_BODY_DIAM) # was 25
-        self.c1_shape.color = THECOLORS[CAR_COLOR]
-        self.c1_shape.elasticity = 1.0
-        self.c1_body.angle = r
-        driving_direction = Vec2d(1, 0).rotated(self.c1_body.angle)
-        self.c1_body.apply_impulse(driving_direction)
-        self.space.add(self.c1_body, self.c1_shape)
-
-
-    def create_car_2(self, x, y, r):
-        inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
-        self.c2_body = pymunk.Body(1, inertia)
-        self.c2_body.position = x, y
-        self.c2_shape = pymunk.Circle(self.c2_body, CAR_BODY_DIAM) # was 25
-        self.c2_shape.color = THECOLORS[CAR_COLOR]
-        self.c2_shape.elasticity = 1.0
-        self.c2_body.angle = r
-        driving_direction = Vec2d(1, 0).rotated(self.c2_body.angle)
-        self.c2_body.apply_impulse(driving_direction)
-        self.space.add(self.c2_body, self.c2_shape)
+        drone_body = pymunk.Body(1, inertia)
+        drone_body.position = x, y
+        drone_shape = pymunk.Circle(drone_body, DRONE_BODY_DIAM) # was 25
+        drone_shape.color = THECOLORS[DRONE_COLOR]
+        drone_shape.elasticity = 1.0
+        drone_body.angle = r
+        driving_direction = Vec2d(1, 0).rotated(drone_body.angle)
+        drone_body.apply_impulse(driving_direction)
+        self.space.add(drone_body, drone_shape)
+        return drone_body
     
     
     def move_obstacles(self):
@@ -347,7 +319,7 @@ class GameState:
                 cat.position = int(width/2), int(height/2)
 
 
-    def make_turn(self, turn_action, body):
+    def set_turn(self, turn_action, body):
         # action == 0 is continue current trajectory
         if turn_action == 1:  # slight right adjust to current trajectory
             body.angle -= .2
@@ -362,32 +334,42 @@ class GameState:
     def set_speed(self, cur_speed, speed_action, body):
         # choose appropriate speed action, including 0 speed
         if speed_action == 0:
-            set_speed = cur_speed
-        elif speed_action == 1:
             set_speed = SPEEDS[0]
-        elif speed_action == 2:
+        elif speed_action == 1:
             set_speed = SPEEDS[1]
-        elif speed_action == 3:
+        elif speed_action == 2:
             set_speed = SPEEDS[2]
-        elif speed_action == 4:
-            set_speed = SPEEDS[3]
         
         # effect move by applying speed and direction as vector on self
         driving_direction = Vec2d(1, 0).rotated(body.angle)
         body.velocity = cur_speed * driving_direction
-    
-    
-    def evaluate_move(self, mode, body, last_tgt_dist, tgt_deltas, obs_dists):
+
+
+    def set_pack_adjust(self, pack_action):
+        # action == 0 is continue current trajectory
+        if turn_action == 1:  # +45 degree heading adjustment
+            pack_heading_adjust = (3.14 / 4) * 1
+        elif turn_action == 2:  # +90 degree heading adjustment
+            pack_heading_adjust = (3.14 / 4) * 2
+        elif turn_action == 3:  # -45 degree
+            pack_heading_adjust = (3.14 / 4) * -1
+        elif turn_action == 4:  # -90 degree
+            pack_heading_adjust = (3.14 / 4) * -2
+                
+        return pack_heading_adjust
+
+
+    def evaluate_move(self, cur_mode, drone_id, pack_htt_adjust):
         # 1. calculate distance and angle to active target(s)
         # a. euclidean distance traveled
-        cur_x, cur_y = body.position
-        dx = self.current_target[0] - cur_x
-        dy = self.current_target[1] - cur_y
+        cur_x, cur_y = self.drones[drone_id].body.position
+        dx = self.current_targets[0] - cur_x
+        dy = self.current_targets[1] - cur_y
             
         target_dist = ((dx**2 + dy**2)**0.5)
             
         # b. calculate target angle
-        # i. relative to car
+        # i. relative to drone
         rads = atan2(dy,dx)
         rads %= 2*pi
         target_angle_degs = degrees(rads)
@@ -395,48 +377,53 @@ class GameState:
         if target_angle_degs > 180:
             target_angle_degs = target_angle_degs - 360
             
-        # ii. relative to car's current direction
+        # ii. relative to drone's current direction
         rads = body.angle
         rads %= 2*pi
-        car_angle_degs = degrees(rads)
+        drone_angle_degs = degrees(rads)
             
-        if car_angle_degs > 360:
-            car_angle_degs = car_angle_degs - 360
+        if drone_angle_degs > 360:
+            drone_angle_degs = drone_angle_degs - 360
             
-        # "heading" accounts for angle from car and of car netting degrees car must turn
-        heading_to_target = target_angle_degs - car_angle_degs
+        # "heading" accounts for angle from drone and of drone netting degrees drone must turn
+        heading_to_target = target_angle_degs - drone_angle_degs
         if heading_to_target < -180:
             heading_to_target = heading_to_target + 360
 
         # 3. calculate normalized efficiency of last move
         # vs. target acquisition
-        dt = last_tgt_dist - target_dist
+        dt = self.last_tgt_dist[drone_id] - target_dist
             
         if abs(dt) >= 12:
-            dt = np.mean(tgt_deltas)
+            dt = np.mean(self.tgt_deltas[drone_id,:])
 
         # postive distance delta indicates "closing" on the target
-        ndt = (dt- np.mean(tgt_deltas)) / np.std(tgt_deltas)
+        ndt = (dt- np.mean(self.tgt_deltas[drone_id,:])) / np.std(tgt_deltas[drone_id,:])
     
         # vs. obstacle avoidance
-        do = min(c1_sonar_dist_readings[:HUNT_NUM_SENSOR])
+        do = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
         
         # positive distance delta indicates "avoiding" an obstacle
-        ndo = (do - np.mean(obs_dists)) / np.std(obs_dists)
+        ndo = (do - np.mean(self.obs_dists[drone_id,:])) / np.std(obs_dists[drone_id,:])
             
         if cur_mode == ACQUIRE:
-            move_efficiency = ndt / target_dist**0.333
-        # cubed root of the target distance... lessens effect of distance
+            acquire_move_efficiency = ndt / target_dist**0.333
+            # cubed root of the target distance... lessens effect of distance
         else:
-            move_efficiency = (ndt + (1.55 * ndo)) / target_dist**0.333
-            # balancing avoidance with acquisition
+            avoid_move_efficiency = ndo / target_dist**0.333
+            acquire_move_efficiency = ndt / target_dist**0.333
+            # for balancing avoidance with acquisition
             
-        last_tgt_dist = target_dist
-        tgt_deltas.append(dt)
+        self.last_tgt_dist[drone_id] = target_dist
+        if drone_id == 0:
+            self.tgt_deltas[drone_id].append(dt)
+        else:
+            self.tgt_deltas[drone_id,self.tgt_deltas.shape[1]] = dt
+
         if len(tgt_deltas) > STATS_BUFFER:
             tgt_deltas.pop(0)
             
-        last_obs_dist = min(c1_sonar_dist_readings[:HUNT_NUM_SENSOR])
+        last_obs_dist = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
         obs_dists.append(do)
         if len(obs_dists) > STATS_BUFFER:
             obs_dists.pop(0)
@@ -445,38 +432,46 @@ class GameState:
         if target_dist <= TARGET_RADIUS:
             print("************** target acquired ************")
             self.target_acquired = True
-            #target_dist = 1
+        
+            # move acquired target to acquired targets
+            self.acquired_targets.append(self.current_targets[target_id])
+            self.target_inventory.remove(self.current_targets[target_id])
+            
+            print("pct complete:", (len(self.acquired_targets) /
+                                    (len(self.acquired_targets) + len(self.target_inventory))))
+                    
+            if len(self.acquired_targets) % 5 == 1:
+                take_screen_shot(screen)
+            
+            # get a new target
+            self.assign_target((cur_x, cur_y), False)
 
         return target_dist, heading_to_target, move_efficiency
 
 
-    def build_states(mode, cur_x, cur_y, body, turn_action, cur_speed,
-                     last_tgt_dist, target_deltas, obs_dists):
+    def build_states(self, cur_mode, drone_id, turn_action, cur_speed):
         
-        turn_state = speed_state = acquire_state = hunt_state = move_efficiency = 0
-        min_sonar_dist = 20
-        
+        turn_state = avoid_state = acquire_state = hunt_state = move_efficiency = 0
+    
         # get readings from the various sensors
         sonar_dist_readings, sonar_color_readings = \
-            self.get_sonar_dist_color_readings(cur_x, cur_y, body.angle)
+            self.get_sonar_dist_color_readings(self.cur_x[drone_id],
+                                               self.cur_y[drone_id],
+                                               self.drones[drone_id].body.angle)
         
         turn_readings = sonar_dist_readings[:TURN_NUM_SENSOR]
-        min_sonar_dist = min(turn_readings)
         turn_readings = turn_readings + sonar_color_readings[:TURN_NUM_SENSOR]
-        turn_state = np.array([turn_readings])
-
-        if cur_mode in [SPEED, ACQUIRE, HUNT, PACK]
-            speed_readings = sonar_dist_readings[:SPEED_NUM_SENSOR]
-            min_sonar_dist = min(speed_readings)
-            speed_readings = speed_readings + sonar_color_readings[:SPEED_NUM_SENSOR]
-            speed_readings.append(turn_action)
-            speed_readings.append(cur_speed)
-            speed_state = np.array([speed_readings])
+        
+        avoid_readings = sonar_dist_readings[:AVOID_NUM_SENSOR]
+        avoid_readings = avoid_readings + sonar_color_readings[:AVOID_NUM_SENSOR]
+        avoid_readings.append(turn_action)
+        avoid_readings.append(cur_speed)
         
         if cur_mode in [ACQUIRE, HUNT, PACK]:
             # calculate distances, headings and efficiency
             target_dist, heading_to_target, move_efficiency = \
-                self.evaluate_move(cur_mode, body, last_tgt_dist, target_deltas, obs_dists)
+                self.evaluate_move(cur_mode, dron_id)
+            
             acquire_state = np.array([[target_dist, heading_to_target]])
             # IS SONAR DISTANCE READING USED HERE? HASN'T IT BEEN CRASHING. HOW HAS IT BEEN CRASHING?
 
@@ -487,7 +482,7 @@ class GameState:
                 hunt_readings.append(heading_to_target)
                 hunt_state = np.array([hunt_readings])
 
-        return turn_state, speed_state, acquire_state, hunt_state, min_sonar_dist, move_efficiency
+        return turn_state, avoid_state, acquire_state, hunt_state, min_sonar_dist, move_efficiency
 
 
     def calculate_reward(self, mode, cur_x, cur_y, body, min_sonar_dist, move_efficiency)
@@ -526,17 +521,6 @@ class GameState:
             elif cur_mode in [ACQUIRE, HUNT, PACK]: # rewards moving in the right direction and acquiring pixels
                 if self.target_acquired == True:
                     acquire_reward = hunt_reward = 1000
-                    
-                    # remove acquired pixel
-                    self.acquired_pixels.append(self.current_target)
-                    self.target_pixels.remove(self.current_target)
-                    print("pct complete:", (len(self.acquired_pixels) /
-                                            (len(self.acquired_pixels) + len(self.target_pixels))))
-                        
-                    if len(self.acquired_pixels) % 5 == 1:
-                        take_screen_shot(screen)
-                                            
-                    self.assign_next_target((cur_x, cur_y), False)
                     self.target_acquired = False
 
                 else:
@@ -680,12 +664,12 @@ class GameState:
     def get_track_or_not(self, reading):
         # check to see if color encountered is safe (i.e., should not be crash)
         if reading == pygame.color.THECOLORS[BACK_COLOR] or \
-            reading == pygame.color.THECOLORS[CAR_COLOR] or \
+            reading == pygame.color.THECOLORS[DRONE_COLOR] or \
             reading == pygame.color.THECOLORS[SMILE_COLOR] or \
-            reading == pygame.color.THECOLORS[C1_PATH_COLOR] or \
+            reading == pygame.color.THECOLORS[PATH_COLOR_1] or \
             reading == pygame.color.THECOLORS[ACQUIRE_PIXEL_COLOR] or \
             reading == pygame.color.THECOLORS[ACQUIRED_PIXEL_COLOR] or \
-            reading == pygame.color.THECOLORS[C2_PATH_COLOR]:
+            reading == pygame.color.THECOLORS[PATH_COLOR_2]:
             return 0
         else:
             if reading == pygame.color.THECOLORS[WALL_COLOR]:
@@ -714,40 +698,40 @@ class GameState:
                 y_pxl = (ACQUIRE_MARGIN + (v * ACQUIRE_PIXEL_SEPARATION))
                 
                 if(first_iter == True):
-                    self.target_pixels.append((x_pxl,y_pxl))
+                    self.target_inventory.append((x_pxl,y_pxl))
                 
                 ctr += 1
 
         return num_pxl_x_dir, num_pxl_y_dir
 
-    def assign_next_target(self, last_xy, first_iter):
+    def assign_target(self, last_xy, first_iter, old_target_xy):
         
         # clear the path surface
         path_grid.fill(pygame.color.THECOLORS[BACK_COLOR])
         
         # randomly select a new target
-        if first_iter == False:
+        if !first_iter:
             
             pygame.draw.rect(target_grid, pygame.color.THECOLORS[ACQUIRED_PIXEL_COLOR],
-                             ((last_xy[0], height-last_xy[1]), (ACQUIRE_PIXEL_SIZE,
-                                                         ACQUIRE_PIXEL_SIZE)), 0)
+                             ((old_target_xy[0], height-old_target_xy[1]),
+                              (ACQUIRE_PIXEL_SIZE, ACQUIRE_PIXEL_SIZE)), 0)
         
-        self.current_target = random.choice(self.target_pixels)
-        
+        new_target = random.choice(self.target_inventory)
         # closest logic
-        #dx = np.array([int(i[0]) for i in self.target_pixels]) - last_xy[0]
-        #dy = np.array([int(i[1]) for i in self.target_pixels]) - last_xy[1]
+        #dx = np.array([int(i[0]) for i in self.target_inventory]) - last_xy[0]
+        #dy = np.array([int(i[1]) for i in self.target_inventory]) - last_xy[1]
         #dists = np.sqrt(pow(dx,2) + pow(dy,2))
         #dists = dists.tolist()
         #index = dists.index(min(dists))
-        #self.current_target = self.target_pixels[index]
+        #self.current_targets = self.target_inventory[index]
+        
+        self.current_targets.append(new_target)
+        print("new target:", new_target)
         
         # draw the new target
         pygame.draw.rect(target_grid, pygame.color.THECOLORS[ACQUIRE_PIXEL_COLOR],
-                         ((self.current_target[0], height-self.current_target[1]),
+                         ((self.current_targets[0], height-self.current_targets[1]),
                           (ACQUIRE_PIXEL_SIZE, ACQUIRE_PIXEL_SIZE)), 0)
-                          
-        print("new target:", self.current_target)
 
 
     # not currently used

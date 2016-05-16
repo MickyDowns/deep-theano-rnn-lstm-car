@@ -12,6 +12,7 @@ HUNT = 1
 TURN = 2
 AVOID = 3
 ACQUIRE = 4
+PACK = 5
 cur_mode = HUNT
 
 # turn model settings

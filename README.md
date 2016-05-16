@@ -2,7 +2,7 @@
 
 ## overview
 
-I'm teaching my daughters about artificial intelligence. This project introduces key concepts around reinforcement learning, using sensor data, writing objective functions and network layering. The result, to this point, is a 2-D implementation of learning drones that:
+I'm teaching my daughters about artificial intelligence. This project introduces key concepts around reinforcement learning, using sensor data, writing objective functions and layering networks. The result, to this point, is a 2-D implementation of learning drones that:
 
     *   Avoid: Turn, accelerate, decelerate to avoid obstacles
 
@@ -14,7 +14,9 @@ I'm teaching my daughters about artificial intelligence. This project introduces
 
 Here's a video overview: [![layered reinforcement learning for complex behaviors](https://img.youtube.com/vi/WrLRGzbfeZc/0.jpg)](https://www.youtube.com/watch?v=WrLRGzbfeZc)
 
-It's possible to perform these tasks using a deep, deep neural net. The folks at DeepMind (of Go fame) used Q-learning to train networks to win Atari games (https://t.co/liV9sJFoCp). I have specifically avoided giving the drones a down-sampled, convnet view of the entire environment. Instead, they learn it thru exploration. I will eventually flash this network to real drones and want the learning to continue onboard, on CPU.
+In general, layered learning is used when mapping directly from inputs to outputs is not tractable e.g., too complex for current algorithms, networks. Layered learning starts with a bottoms-up, hierarchical task decomposition. It then uses machine learning algorithms to exploit data at each level to train specific, separable models. Finally, the output of learning in one layer feeds into the next layer until the complex behavior is achieved. More here: http://www.cs.cmu.edu/~mmv/papers/00ecml-llearning.pdf. 
+
+It is possible that the tasks performed herein could be performed by a single, deep, deep neural net. The folks at DeepMind (of Go fame) used Q-learning to train a single network to win Atari games (https://t.co/liV9sJFoCp). However, I have specifically avoided giving the drones a down-sampled, convnet view of the entire environment. Instead, they learn it thru exploration as I will eventually flash this network to real drones and want the learning to continue onboard, on CPU. 
 
 This project extends work begun by Matt Harvey in his Github repository entitled **Using reinforcement learning to train an autonomous vehicle to avoid obstacles** located here: https://github.com/harvitronix/reinforcement-learning-car. He trained an digital autonomous car to avoid obstacles using reinforcement learning. His ultimate goal is to embed the resulting neural network onto a chip and into a a car that will, hopefully, avoid his cats while cruising his house. I highly recommend his Medium posts on the topic beginning here: https://medium.com/@harvitronix/using-reinforcement-learning-in-python-to-teach-a-virtual-car-to-avoid-obstacles-6e782cc7d4c6.
 
