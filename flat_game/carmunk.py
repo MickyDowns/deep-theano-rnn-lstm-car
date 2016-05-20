@@ -28,11 +28,12 @@ from math import atan2, degrees, pi, sqrt
 # ***** initialize variables *****
 
 # operating modes drive neural net training
-HUNT = 1
-TURN = 2
-AVOID = 3
-ACQUIRE = 4
-cur_mode = HUNT
+TURN = 1
+AVOID = 2
+ACQUIRE = 3
+HUNT = 4
+PACK = 5
+cur_mode = TURN
 
 # PyGame init
 width = 1000
@@ -46,12 +47,13 @@ clock = pygame.time.Clock()
 screen = pygame.display.set_mode((width, height))
 BACK_COLOR = "black"
 WALL_COLOR = "red"
-CAR_COLOR = "green"
+DRONE_COLOR = "green"
 SMILE_COLOR = "blue"
 OBSTACLE_COLOR = "purple"
 CAT_COLOR = "orange"
-CAR_BODY_DIAM = 12
+DRONE_BODY_DIAM = 12
 SONAR_ARM_LEN = 20
+OBSTACLE_SIZES = [30, 30, 50, 50, 63, 63]
 show_sensors = True # Showing sensors and redrawing slows things down.
 draw_screen = True
 
@@ -59,7 +61,7 @@ draw_screen = True
 TURN_NUM_SENSOR = 5 # front five sonar distance readings
 
 # avoid model settings
-AVOID_NUM_SENSOR = 7 # seven sonar distance + color readings
+AVOID_NUM_SENSOR = 7 # front five, rear two sonar
 SPEEDS = [30,50,70]
 
 # acquire model settngs
@@ -68,6 +70,7 @@ target_grid.convert_alpha()
 ACQUIRE_PIXEL_COLOR = "green"
 ACQUIRED_PIXEL_COLOR = "yellow"
 ACQUIRE_PIXEL_SIZE = 2
+TARGET_RADIUS = 10
 
 if cur_mode == ACQUIRE:
     ACQUIRE_PIXEL_SEPARATION = 25
@@ -80,11 +83,13 @@ path_grid = pygame.Surface((width, height))
 PATH_COLOR = "grey"
 
 # hunt model settings
-HUNT_NUM_SENSOR = 7
+HUNT_NUM_SENSOR = 7 # all sonar distance / color readings
+PACK_NUM_SENSOR = 7 # all sonar distance readings
+NUM_DRONES = 1
+PACK_HEADING_ADJUST = [[0,0],[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]
+NUM_TARGETS = 1
+PACK_EVAL_FRAMES = 7
 STATS_BUFFER = 2000
-
-# future
-DOWN_SAMPLE = 10
 
 # Turn off alpha since we don't use it.
 screen.set_alpha(None)
@@ -93,21 +98,33 @@ screen.set_alpha(None)
 
 class GameState:
     def __init__(self):
-        # crash state
-        self.crashed = False
-
         # initialize space
         self.space = pymunk.Space()
         self.space.gravity = pymunk.Vec2d(0., 0.)
-
-        # create self a.k.a. "car"
-        self.create_car(width/2, height/2, 0.5)
-        self.cur_x, self.cur_y = self.car_body.position
-
+        
         # initialize counters
-        self.num_steps = 0
-        self.num_off_scrn = 0
-
+        self.total_frame_ctr = self.crash_frame_ctr = self.num_off_scrn = 0
+        
+        # crash state
+        #self.crashed = np.empty([NUM_DRONES, 1])
+        #self.crashed.fill(False)
+        
+        # create drones
+        self.drones = self.driving_direction = []
+        self.cur_x = self.cur_y = np.zeros([NUM_DRONES, 1])
+        self.driving_direction = [(0,0)]
+        
+        for drone_id in range(NUM_DRONES):
+            self.drones.append(self.create_drone(random.randint(400,600),
+                                                 random.randint(300,400),
+                                                 0.5, drone_id))
+            self.cur_x[drone_id], self.cur_y[drone_id] = \
+                self.drones[drone_id].position
+    
+        # initialize last position values
+        self.last_x = self.cur_x + 2
+        self.last_y = self.cur_y +2
+        
         # create walls
         static = [pymunk.Segment(self.space.static_body,(0, 1), (0, height), 1),
                   pymunk.Segment(self.space.static_body,(1, height), (width, height), 1),
@@ -118,349 +135,171 @@ class GameState:
             s.friction = 1.
             s.group = 1
             s.collision_type = 1
-            s.color = THECOLORS[WALL_COLOR] # 'red'
+            s.color = THECOLORS[WALL_COLOR]
         self.space.add(static)
         
-        if cur_mode in [TURN, AVOID, HUNT]:
-
-            self.obstacles = []
-            self.cats = []
+        if cur_mode in [TURN, AVOID, HUNT, PACK]:
             
-            #if cur_mode in [TURN, AVOID]:
-            # create slow, randomly moving, larger obstacles
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-100),50)) # was 100
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-70),50)) # was 100
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-70),63)) # was 125
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),63)) # was 125
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),30)) # was 35
-            self.obstacles.append(self.create_obstacle(random.randint(100, width-100),  random.randint(70, height-70),30)) # was 35
+            self.obstacles = self.cats = []
+            
+            if cur_mode in [TURN, AVOID]: # used to gradually introduce obstacles
+                # create slow, randomly moving, larger obstacles
+                self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
+                                                           random.randint(70, height-100),50))
+                self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
+                                                           random.randint(70, height-70),50))
+                self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
+                                                           random.randint(70, height-70),63))
+                self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
+                                                           random.randint(70, height-70),63))
+                self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
+                                                           random.randint(70, height-70),30))
+                self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
+                                                           random.randint(70, height-70),30))
         
-            # create faster, randomly moving, smaller obstacles a.k.a. "cats"
-            self.cats.append(self.create_cat(width-950,height-100))
-            self.cats.append(self.create_cat(width-50,height-600))
-            self.cats.append(self.create_cat(width-50,height-100))
-            self.cats.append(self.create_cat(width-50,height-600))
+                # create faster, randomly moving, smaller obstacles a.k.a. "cats"
+                self.cats.append(self.create_cat(width-950,height-100))
+                self.cats.append(self.create_cat(width-50,height-600))
+                self.cats.append(self.create_cat(width-50,height-100))
+                self.cats.append(self.create_cat(width-50,height-600))
 
-        if cur_mode in [ACQUIRE, HUNT]:
+        if cur_mode in [ACQUIRE, HUNT, PACK]:
+            
             # set up seach grid and feed first target
-            self.target_radius = 10
-            self.target_pixels = []
-            self.current_target = (0,0)
-            self.acquired_pixels = []
+            self.target_inventory = self.acquired_targets = []
+            self.target_radius = TARGET_RADIUS
             self.generate_targets(True)
-            self.last_x = width/2 + 1
-            self.last_y = height/2 +1
-            self.assign_next_target((self.last_x, self.last_y), True)
+            self.current_targets = []
+            for targets in range(NUM_TARGETS):
+                self.assign_target(True, drone_id)
             self.target_acquired = False
-            self.last_target_dist = 350
-            self.last_obstacle_dist = 10
-            self.target_deltas = [0.4,0.5,0.6]
-            #self.obstacle_deltas = [1,2,3]
-            self.obstacle_dists = [12,10]
+            
+            # initialize structures to track efficience of EACH move
+            # distance to target
+            self.last_tgt_dist = np.empty([NUM_DRONES, NUM_TARGETS])
+            self.last_tgt_dist.fill(350) # last target dist held in array for ea drone
+            tmp = [0.5]; self.tgt_deltas = [] # deltas held in list for ea drone
+            for drone_id in range(NUM_DRONES): self.tgt_deltas.append(tmp)
+            
+            # distance to obstacles
+            self.last_obs_dist = np.empty([NUM_DRONES, NUM_TARGETS])
+            self.last_obs_dist.fill(10) # last obstacle dist held in array for ea drone
+            tmp = [10]; self.obs_dists = [] # distances held in list for ea drone
+            for drone_id in range(NUM_DRONES): self.obs_dists.append(tmp)
+
+            # initialize structures to track efficience of PACK_EVAL_FRAMES moves
+            if cur_mode == PACK:
+                # distance to target
+                self.last_pack_tgt_dist = np.empty([NUM_DRONES, NUM_TARGETS])
+                self.last_pack_tgt_dist.fill(350) # last target dist held in array for ea drone
+                tmp = [0.4, 0.7]; self.pack_tgt_deltas = [] # deltas held in list for ea drone
+                for drone_id in range(NUM_DRONES): self.pack_tgt_deltas.append(tmp)
+        
+                # distance to obstacles
+                self.last_pack_obs_dist = np.empty([NUM_DRONES, NUM_TARGETS])
+                self.last_pack_obs_dist.fill(10) # last obstacle dist held in array for ea drone
+                tmp = [10, 12]; self.pack_obs_dists = [] # distances held in list for ea drone
+                for drone_id in range(NUM_DRONES): self.pack_obs_dists.append(tmp)
+
         """ note: while python assumes (0,0) is in the lower left of the screen, pygame assumes (0,0) in the upper left. therefore, y+ moves DOWN the y axis. here is example code that illustrates how to handle angles in that environment: https://github.com/mgold/Python-snippets/blob/master/pygame_angles.py. in this implementation, I have flipped the screen so that Y+ moves UP the screen."""
 
     # ***** primary logic controller for game play *****
 
-    def frame_step(self, cur_mode, turn_action, speed_action, cur_speed, car_distance):
+    def frame_step(self, drone_id, turn_action, speed_action, pack_action, cur_speed, frame_ctr):
         
-        # plot move based on current (active) model prediction
-        if cur_mode in [TURN, AVOID, ACQUIRE, HUNT]:
-            # action == 0 is continue current trajectory
-            if turn_action == 1:  # slight right adjust to current trajectory
-                self.car_body.angle -= .2
-            elif turn_action == 2:  # hard right
-                self.car_body.angle -= .4
-            elif turn_action == 3:  # slight left
-                self.car_body.angle += .2
-            elif turn_action == 4:  # hard left
-                self.car_body.angle += .4
+        self.crash_frame_ctr = frame_ctr
         
-        if cur_mode in [AVOID, HUNT]: # setting speed value directly see SPEEDS
-            if speed_action == 0: # 0 or 30
-                cur_speed = SPEEDS[0]
-            elif speed_action == 1: # 30 or 50
-                cur_speed = SPEEDS[1]
-            elif speed_action == 2: # 50 or 70
-                cur_speed = SPEEDS[2]
-            #elif speed_action == 3: # 70
-            #    cur_speed = SPEEDS[3]
+        # turn drone based on current (active) model prediction
+        if cur_mode in [TURN, AVOID, ACQUIRE, HUNT, PACK]:
+            self.set_turn(turn_action, drone_id)
         
-        # effect move by applying speed and direction as vector on self
-        driving_direction = Vec2d(1, 0).rotated(self.car_body.angle)
-        self.car_body.velocity = cur_speed * driving_direction
+        # set speed based on active model prediction
+        if cur_mode in [AVOID, HUNT, PACK]: # setting speed values directly see SPEEDS
+            self.set_speed(speed_action, drone_id)
         
-        if cur_mode in [TURN, AVOID, HUNT]:
-            # move slow obstacles
-            if self.num_steps % 20 == 0: # 20x slower than self
+        # set heading adjustment based on pack model output
+        if cur_mode == PACK:
+            heading_adjust = self.set_pack_adjust(pack_action)[drone_id]
+        else:
+            heading_adjust = 0
+    
+        # move obstacles
+        if cur_mode in [TURN, AVOID, HUNT, PACK]:
+            # slow obstacles
+            if self.total_frame_ctr % 20 == 0: # 20x slower than self
                 self.move_obstacles()
 
-            # move fast obstacles
-            if self.num_steps % 40 == 0: # 40 x more stable than self
-                self.move_cats()
-       
-       # Update the screen and surfaces
-        screen.fill(pygame.color.THECOLORS[BACK_COLOR])
+            # fast obstacles
+            if self.total_frame_ctr % 40 == 0: # 40 x more stable than self
+                self.move_cats
+
+        # update the screen and surfaces
+        if drone_id == 0:
+            screen.fill(pygame.color.THECOLORS[BACK_COLOR])
         
-        if cur_mode in [ACQUIRE, HUNT]:
-            
-            # draw the path self has taken on the acquire grid
+        if cur_mode in [ACQUIRE, HUNT, PACK]:
+            # draw the path drone has taken on the path grid
             pygame.draw.lines(path_grid, pygame.color.THECOLORS[PATH_COLOR], True,
-                              ((self.last_x, height-self.last_y),
-                               (self.cur_x, height-self.cur_y)), 1)
+                              ((self.last_x[drone_id], height - self.last_y[drone_id]),
+                               (self.cur_x[drone_id], height - self.cur_y[drone_id])), 1)
             
-            # overlay the path, target surfaces on the screen
-            screen.blit(path_grid, (0,0))
-            screen.blit(target_grid, (0,0))
+            # if last drone, bind paths, targets to the screen
+            if drone_id == (NUM_DRONES - 1):
+                screen.blit(path_grid, (0,0))
+                screen.blit(target_grid, (0,0))
+
+        # if last drone, display screen
+        if(drone_id == (NUM_DRONES - 1)):
+            draw(screen, self.space)
+            self.space.step(1./10) # one pixel for every 10 SPEED
+            if draw_screen:
+                pygame.display.flip()
+
+        # get readings, build states
+        self.last_x[drone_id] = self.cur_x[drone_id]
+        self.last_y[drone_id] = self.cur_y[drone_id]
+        self.cur_x[drone_id], self.cur_y[drone_id] = self.drones[drone_id].position
         
-        draw(screen, self.space)
-        self.space.step(1./10) # one pixel for every 10 SPEED
-        if draw_screen:
-            pygame.display.flip()
-
-        self.last_x = self.cur_x; self.last_y = self.cur_y
-        self.cur_x, self.cur_y = self.car_body.position
-
-        # get readings from the various sensors
-        sonar_dist_readings, sonar_color_readings = \
-            self.get_sonar_dist_color_readings(self.cur_x, self.cur_y, self.car_body.angle)
-        turn_readings = sonar_dist_readings[:TURN_NUM_SENSOR]
-        turn_readings = turn_readings + sonar_color_readings[:TURN_NUM_SENSOR]
+        turn_state, avoid_state, acquire_state, hunt_state, drone_state, min_sonar_dist, avoid_move_efficiency, acquire_move_efficiency = \
+            self.build_states(drone_id, turn_action, heading_adjust, cur_speed)
         
-        avoid_readings = sonar_dist_readings[:AVOID_NUM_SENSOR]
-        avoid_readings = avoid_readings + sonar_color_readings[:AVOID_NUM_SENSOR]
-        avoid_readings.append(turn_action)
-        avoid_readings.append(cur_speed)
-
-        if cur_mode in [ACQUIRE, HUNT]:
-            
-            # 1. calculate distance and angle to active target(s)
-            # a. euclidean distance traveled
-            dx = self.current_target[0] - self.cur_x
-            dy = self.current_target[1] - self.cur_y
-            
-            target_dist = ((dx**2 + dy**2)**0.5)
-            
-            # b. calculate target angle
-                # i. relative to car
-            rads = atan2(dy,dx)
-            rads %= 2*pi
-            target_angle_degs = degrees(rads)
-            
-            if target_angle_degs > 180:
-                target_angle_degs = target_angle_degs - 360
-            
-                # ii. relative to car's current direction
-            rads = self.car_body.angle
-            rads %= 2*pi
-            car_angle_degs = degrees(rads)
-            
-            if car_angle_degs > 360:
-                car_angle_degs = car_angle_degs - 360
-            
-            # "heading" accounts for angle from car and of car netting degrees car must turn
-            heading_to_target = target_angle_degs - car_angle_degs
-            if heading_to_target < -180:
-                heading_to_target = heading_to_target + 360
-            
-            # 3. calculate normalized efficiency of last move
-            # vs. target acquisition
-            dt = self.last_target_dist - target_dist
-            
-            if abs(dt) >= 12:
-                dt = np.mean(self.target_deltas)
-            
-            # postive distance delta indicates "closing" on the target
-            ndt = (dt- np.mean(self.target_deltas)) / np.std(self.target_deltas)
-            #ndt = (dt) / np.std(self.target_deltas)
-            
-            # vs. obstacle avoidance
-            do = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
-            
-            # positive distance delta indicates "avoiding" an obstacle
-            ndo = (do - np.mean(self.obstacle_dists)) / np.std(self.obstacle_dists)
-            #ndo = (do) / np.std(self.obstacle_dists)
-            
-            if cur_mode == ACQUIRE:
-                acquire_move_efficiency = ndt / target_dist**0.333
-                # cubed root of the target distance... lessens effect of distance
-            else:
-                avoid_move_efficiency = ndo / target_dist**0.333
-                acquire_move_efficiency = ndt / target_dist**0.333
-                # balancing avoidance with acquisition
-                
-            self.last_target_dist = target_dist
-            self.target_deltas.append(dt)
-            if len(self.target_deltas) > STATS_BUFFER:
-                self.target_deltas.pop(0)
-                                    
-            self.last_obstacle_dist = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
-            self.obstacle_dists.append(do)
-            if len(self.obstacle_dists) > STATS_BUFFER:
-                self.obstacle_dists.pop(0)
-            
-            # 4. if w/in reasonable distance, declare victory
-            if target_dist <= self.target_radius:
-                print("************** target acquired ************")
-                self.target_acquired = True
-                #target_dist = 1
+        # calc rewards based on training mode(s) in effect
+        reward = self.calc_rwd(drone_id, min_sonar_dist, avoid_move_efficiency, acquire_move_efficiency)
         
-        if cur_mode == HUNT:
-            hunt_readings = sonar_dist_readings[:HUNT_NUM_SENSOR]
-            hunt_readings = hunt_readings + sonar_color_readings[:HUNT_NUM_SENSOR]
-            hunt_readings.append(target_dist)
-            hunt_readings.append(heading_to_target)
-
-        # build states
-        turn_state = avoid_state = acquire_state = hunt_state = 0
-        turn_state = np.array([turn_readings])
-        avoid_state = np.array([avoid_readings])
-
-        if cur_mode in [ACQUIRE, HUNT]:
-            acquire_state = np.array([[target_dist, heading_to_target]])
-            if cur_mode == HUNT:
-                hunt_state = np.array([hunt_readings])
-    
-        # calculate rewards based on training mode(s) in effect
-        reward = reward_turn = reward_avoid = reward_acquire = 0
+        print("REWARD:", reward)
+        # introduce obstacles gradually for HUNT/PACK learning
+        if cur_mode in [HUNT, PACK]:
+            if self.total_frame_ctr > 1 and \
+                self.total_frame_ctr < 15001 and \
+                self.total_frame_ctr % 2500 == 0:
+                self.obstacles.append(self.create_obstacle(random.randint(100, width-100),
+                                                           random.randint(70, height-70),
+                                                           OBSTACLE_SIZES[int(self.total_frame_ctr / 2500)-1]))
+                self.target_radius -= 1
         
-        if cur_mode == AVOID:
-            read = sonar_dist_readings[:AVOID_NUM_SENSOR]
-        elif cur_mode == HUNT:
-            read = sonar_dist_readings[:HUNT_NUM_SENSOR]
-        else:
-            read = sonar_dist_readings[:TURN_NUM_SENSOR]
-        
-        if self.car_is_crashed(read):
-            # car crashed when any reading == 1. note: change (sensor) readings as needed
-            self.crashed = True
-            reward = reward_turn = reward_avoid = reward_acquire = -500
-            if self.cur_x < 0 or self.cur_x > width or self.cur_y < 0 or self.cur_y > height:
-                self.car_body.position = int(width/2), int(height/2)
-                self.cur_x, self.cur_y = self.car_body.position
-                self.num_off_scrn += 1
-                print("off screen. total off screens", self.num_off_scrn)
-                reward = reward_turn = reward_avoid = reward_acquire = -1000
-            self.recover_from_crash(driving_direction)
-            
-        else:
-            if cur_mode == TURN: # Rewards better spacing from objects
-                reward = reward_turn = min(sonar_dist_readings[:TURN_NUM_SENSOR])
+            if self.total_frame_ctr > 15001 and \
+                self.total_frame_ctr < 25001 and \
+                self.total_frame_ctr % 2500 == 0:
 
-            elif cur_mode == AVOID: # rewards distance from objects and speed
-                #reward = reward_avoid = min(sonar_dist_readings[:AVOID_NUM_SENSOR])
-                sd_speeds = np.std(SPEEDS)
-                sd_dist = np.std(range(20))
-            
-                std_speed = cur_speed / sd_speeds
-                std_dist = min(sonar_dist_readings[:TURN_NUM_SENSOR]) / sd_dist
-            
-                std_max_speed = max(SPEEDS) / sd_speeds
-                std_max_dist = SONAR_ARM_LEN / sd_dist
-            
-                reward = reward_avoid = ((std_speed * std_dist) +
-                                         ((std_max_speed - std_speed) * (std_max_dist - std_dist)))
+                self.cats.append(self.create_cat(width-500,height-350))
 
-            elif cur_mode in [ACQUIRE, HUNT]: # rewards moving in the right direction and acquiring pixels
-                if self.target_acquired == True:
-                
-                    reward_avoid = reward_acquire = 1000
-                
-                    # remove acquired pixel
-                    self.acquired_pixels.append(self.current_target)
-                    self.target_pixels.remove(self.current_target)
-                    print("pct complete:", (len(self.acquired_pixels) /
-                                        (len(self.acquired_pixels) + len(self.target_pixels))))
-                                        
-                    if len(self.acquired_pixels) % 50 == 1:
-                        take_screen_shot(screen, "snap")
-                
-                    self.assign_next_target((self.cur_x, self.cur_y), False)
-                    self.target_acquired = False
-            
-                else:
-                    if cur_mode == ACQUIRE:
-                        reward_acquire = 100 * acquire_move_efficiency
-                    elif cur_mode == HUNT:
-                        reward_acquire = 50 * acquire_move_efficiency
-                        reward_avoid = 50 * avoid_move_efficiency
-
-                if cur_mode == HUNT:
-                    if self.num_steps % 10000 == 0 or self.num_steps % 10000 == 1:
-                        print("***** reward calcs *****")
-                        print("step counter:",self.num_steps)
-                        print("target dist:", target_dist)
-                        print("dt:", dt)
-                        print("mean dist deltas:", np.mean(self.target_deltas))
-                        print("std dist deltas:", np.std(self.target_deltas))
-                        print("ndt:", ndt)
-                        print("min obs dist:", min(sonar_dist_readings[:HUNT_NUM_SENSOR]))
-                        print("do:", do)
-                        print("mean obs dists:", np.mean(self.obstacle_dists))
-                        print("std obs dists:", np.std(self.obstacle_dists))
-                        print("ndo:", ndo)
-                        print("target dist ** 0.33:", target_dist**0.333)
-                        print("acq move eff:", acquire_move_efficiency)
-                        print("acq reward:", reward_acquire)
-                        print("avd move eff:", avoid_move_efficiency)
-                        print("avd reward:", reward_avoid)
-
-
-                    if self.num_steps == 2000:
-                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),30)) # was 35
-                        self.target_radius -= 1
-
-                    if self.num_steps == 4000:
-                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),  random.randint(70, height-70),30)) # was 35
-                        self.target_radius -= 1
-
-                    if self.num_steps == 6000:
-                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-70),50)) # was 100
-                        self.target_radius -= 1
-
-                    if self.num_steps == 8000:
-                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.randint(70, height-100),50)) # was 100
-                        self.target_radius -= 1
-
-                    if self.num_steps == 10000:
-                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100),random.   randint(70, height-70),63)) # was 125
-                        self.target_radius -= 1
-
-                    if self.num_steps == 12000:
-                        self.obstacles.append(self.create_obstacle(random.randint(100, width-100), random.randint(70, height-70),63)) # was 125
-                        self.target_radius -= 1
-                            
-                    if self.num_steps == 14000:
-                        self.cats.append(self.create_cat(width-950,height-100))
-                        self.target_radius -= 1
-                        
-                    if self.num_steps == 16000:
-                        self.cats.append(self.create_cat(width-50,height-600))
-
-                    if self.num_steps == 18000:
-                        self.cats.append(self.create_cat(width-50,height-100))
-                        
-                    if self.num_steps == 20000:
-                        self.cats.append(self.create_cat(width-50,height-600))
-        
-        self.num_steps += 1
+        self.total_frame_ctr += 1
         clock.tick()
-        
-        #if cur_speed != 70:
-            #take_screen_shot(screen, "snap")
-            #print(cur_speed)
 
-        return turn_state, avoid_state, acquire_state, hunt_state, reward, cur_speed, reward_turn, reward_acquire, reward_avoid
+        return turn_state, avoid_state, acquire_state, hunt_state, drone_state, reward, cur_speed
+                
     
-    # ***** turn and avoid model functions *****
+    # ***** turn and speed model functions *****
     
     def create_obstacle(self, x, y, r):
-        c_body = pymunk.Body(pymunk.inf, pymunk.inf)
-        c_shape = pymunk.Circle(c_body, r)
-        c_shape.elasticity = 1.0
-        c_body.position = x, y
-        c_shape.color = THECOLORS[OBSTACLE_COLOR]
-        self.space.add(c_body, c_shape)
-        return c_body
+        obs_body = pymunk.Body(pymunk.inf, pymunk.inf)
+        obs_shape = pymunk.Circle(obs_body, r)
+        obs_shape.elasticity = 1.0
+        obs_body.position = x, y
+        obs_shape.color = THECOLORS[OBSTACLE_COLOR]
+        self.space.add(obs_body, obs_shape)
+        return obs_body
+    
     
     def create_cat(self,x,y):
         inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
@@ -474,63 +313,397 @@ class GameState:
         self.space.add(cat_body, cat_shape)
         return cat_body
     
-    def create_car(self, x, y, r):
+    
+    def create_drone(self, x, y, r, drone_id):
         inertia = pymunk.moment_for_circle(1, 0, 14, (0, 0))
-        self.car_body = pymunk.Body(1, inertia)
-        self.car_body.position = x, y
-        self.car_shape = pymunk.Circle(self.car_body, CAR_BODY_DIAM) # was 25
-        self.car_shape.color = THECOLORS[CAR_COLOR]
-        self.car_shape.elasticity = 1.0
-        self.car_body.angle = r
-        driving_direction = Vec2d(1, 0).rotated(self.car_body.angle)
-        self.car_body.apply_impulse(driving_direction)
-        self.space.add(self.car_body, self.car_shape)
+        drone_body = pymunk.Body(1, inertia)
+        drone_body.position = x, y
+        drone_shape = pymunk.Circle(drone_body, DRONE_BODY_DIAM) # was 25
+        drone_shape.color = THECOLORS[DRONE_COLOR]
+        drone_shape.elasticity = 1.0
+        drone_body.angle = r
+        self.driving_direction[drone_id] = Vec2d(1, 0).rotated(drone_body.angle)
+        print(self.driving_direction)
+        drone_body.apply_impulse(self.driving_direction[drone_id])
+        self.space.add(drone_body, drone_shape)
+        return drone_body
+    
     
     def move_obstacles(self):
         # randomly moves large, slow obstacles around
-        if len(self.obstacles) > 0:
-            for obstacle in self.obstacles:
-                speed = random.randint(10, 15)
-                direction = Vec2d(1, 0).rotated(self.car_body.angle + random.randint(-2, 2))
-                obstacle.velocity = speed * direction
+        for obstacle in self.obstacles:
+            speed = random.randint(10, 15)
+            direction = Vec2d(1, 0).rotated(self.drones[0].angle + random.randint(-2, 2))
+            obstacle.velocity = speed * direction
+
 
     def move_cats(self):
         # randomly moves small, fast obstacles
-        if len(self.cats) > 0:
-            for cat in self.cats:
-                speed = random.randint(60, 80)
-                direction = Vec2d(1, 0).rotated(random.randint(-3, 3)) # -2,2
-                cat.velocity = speed * direction
-                x, y = cat.position
-                if x < 0 or x > width or y < 0 or y > height:
-                    cat.position = int(width/2), int(height/2)
-    
-    def car_is_crashed(self, sonar_dist_readings):
-        return_val = False
-        for reading in sonar_dist_readings:
-            if reading <= 1:
-                return_val = True
-        return return_val
+        for cat in self.cats:
+            speed = random.randint(60, 80)
+            direction = Vec2d(1, 0).rotated(random.randint(-3, 3)) # -2,2
+            cat.velocity = speed * direction
+            x, y = cat.position
+            if x < 0 or x > width or y < 0 or y > height:
+                cat.position = int(width/2), int(height/2)
 
-    def recover_from_crash(self, driving_direction):
+
+    def set_turn(self, turn_action, drone_id):
+        # action == 0 is continue current trajectory
+        if turn_action == 1:  # slight right adjust to current trajectory
+            self.drones[drone_id].angle -= .2
+        elif turn_action == 2:  # hard right
+            self.drones[drone_id].angle -= .4
+        elif turn_action == 3:  # slight left
+            self.drones[drone_id].angle += .2
+        elif turn_action == 4:  # hard left
+            self.drones[drone_id].angle += .4
+
+
+    def set_speed(self, speed_action, drone_id):
+        # choose appropriate speed action, including 0 speed
+        if speed_action == 0:
+            cur_speed = SPEEDS[0]
+        elif speed_action == 1:
+            cur_speed = SPEEDS[1]
+        elif speed_action == 2:
+            cur_speed = SPEEDS[2]
+        
+        # effect move by applying speed and direction as vector on self
+        self.driving_direction[drone_id] = Vec2d(1, 0).rotated(self.drones[drone_id].angle)
+        self.drones[drone_id].velocity = cur_speed * self.driving_direction[drone_id]
+
+
+    def set_pack_adjust(self, pack_action):
+        
+        heading_adjust = []
+        # pack actions effect +/- 0.8 radian (45 deg) drone heading adjustments (2)
+        for i in range(NUM_DRONES):
+            heading = PACK_HEADING_ADJUST[pack_action][i]
+            heading_adjust.append(heading * (3.14 / 4))
+                
+        return heading_adjust
+
+
+    def evaluate_move(self, drone_id, heading_adjust, min_sonar_dist):
+        print("***** in eval_move *****")
+        print("heading adjust:", heading_adjust)
+        # eventually, want to introduce multiple targets. each new target doubles
+        # state variables. so, for now, assuming single target:
+        target_id = avoid_move_efficiency = acquire_move_efficiency = 0
+        
+        # 1. calc distance and angle to active target(s)
+        # a. euclidean distance traveled
+        dx = self.current_targets[target_id][0] - self.cur_x[drone_id]
+        dy = self.current_targets[target_id][1] - self.cur_y[drone_id]
+        
+        target_dist = ((dx**2 + dy**2)**0.5)
+            
+        # b. calc target angle
+        # i. relative to drone
+        rads = atan2(dy,dx)
+        rads %= 2*pi
+        true_target_angle_rads = rads
+        
+        rads = atan2(dy,dx)
+        print("drone_id", drone_id)
+        print("target angle rads before adjust:", rads)
+        rads = rads + heading_adjust
+        print("target angle rads after adjust:", rads)
+        rads %= 2*pi
+        adj_target_angle_degs = degrees(rads)
+        
+        if adj_target_angle_degs > 180:
+            adj_target_angle_degs = adj_target_angle_degs - 360
+        
+        # ii. relative to drone's current direction
+        rads = self.drones[drone_id].angle
+        rads %= 2*pi
+        drone_angle_rads = rads
+        drone_angle_degs = degrees(rads)
+            
+        if drone_angle_degs > 360:
+            drone_angle_degs = drone_angle_degs - 360
+            
+        # "heading" accounts for angle FROM drone and OF drone netting degrees drone must turn
+        adj_heading_to_target = adj_target_angle_degs - drone_angle_degs
+        if adj_heading_to_target < -180:
+            adj_heading_to_target = adj_heading_to_target + 360
+        
+        if cur_mode != PACK:
+            # 3. calc normalized efficiency of last move
+            # vs. target acquisition
+            dt = self.last_tgt_dist[drone_id, target_id] - target_dist
+                
+            if abs(dt) >= 12: # mistakenly thinking crashes are moves. so, ignore moves > 12
+                dt = np.mean(self.tgt_deltas[drone_id,:])
+
+            # postive distance delta indicates "closing" on the target
+            ndt = (dt - np.mean(self.tgt_deltas[drone_id])) / np.std(self.tgt_deltas[drone_id])
+
+            # save current values
+            self.last_tgt_dist[drone_id, target_id] = target_dist
+            self.tgt_deltas[drone_id].append(dt)
+            
+            if len(self.tgt_deltas[drone_id]) > STATS_BUFFER:
+                self.tgt_deltas[drone_id].pop(0)
+
+            # vs. obstacle avoidance
+            do = min_sonar_dist
+            
+            # positive distance delta indicates "avoiding" an obstacle
+            ndo = (do - np.mean(self.obs_dists[drone_id])) / np.std(self.obs_dists[drone_id])
+
+            # save current values
+            self.last_obs_dist[drone_id] = do
+            self.obs_dists[drone_id].append(do)
+            
+            if len(self.obs_dists[drone_id]) > STATS_BUFFER:
+                self.obs_dists[drone_id].pop(0)
+            
+            # finally, apply calcs to score move
+            if cur_mode == ACQUIRE:
+                acquire_move_efficiency = ndt / target_dist**0.333
+                # cubed root of the target distance... lessens effect of distance
+            else:
+                avoid_move_efficiency = ndo / target_dist**0.333
+                acquire_move_efficiency = ndt / target_dist**0.333
+                # for balancing avoidance with acquisition
+        
+        else:
+            if self.crash_frame_ctr == 1 or self.crash_frame_ctr % PACK_EVAL_FRAMES == 0:
+                # 3. calc normalized efficiency of last move
+                # vs. target acquisition
+                print(self.last_pack_tgt_dist)
+                print(target_dist)
+                dt = np.round((self.last_pack_tgt_dist[drone_id, target_id] - target_dist),2)
+                print(dt)
+                
+                print(self.pack_tgt_deltas)
+                if abs(dt) >= 12: # mistakenly thinking crashes are moves. so, ignore moves > 12
+                    dt = np.mean(self.pack_tgt_deltas[drone_id])
+            
+                # postive distance delta indicates "closing" on the target
+                print(self.pack_tgt_deltas[drone_id])
+                print(np.mean(self.pack_tgt_deltas[drone_id]))
+                print(np.std(self.pack_tgt_deltas[drone_id]))
+                ndt = np.round((dt - np.mean(self.pack_tgt_deltas[drone_id])) / np.std(self.pack_tgt_deltas[drone_id]),2)
+                print(ndt)
+                
+                # save current values
+                self.last_pack_tgt_dist[drone_id, target_id] = target_dist
+                print(self.pack_tgt_deltas)
+                print(self.pack_tgt_deltas[drone_id])
+                self.pack_tgt_deltas[drone_id] = np.append(self.pack_tgt_deltas[drone_id], dt)
+                print(self.pack_tgt_deltas)
+                print(self.pack_tgt_deltas[drone_id])
+                
+                if len(self.pack_tgt_deltas[drone_id]) > STATS_BUFFER:
+                    self.pack_tgt_deltas[drone_id].pop(0)
+
+                # vs. obstacle avoidance
+                do = min_sonar_dist
+    
+                # positive distance delta indicates "avoiding" an obstacle
+                ndo = np.round((do - np.mean(self.pack_obs_dists[drone_id])) / np.std(self.pack_obs_dists[drone_id]),2)
+        
+                # save current values
+                self.last_pack_obs_dist[drone_id] = do
+                self.pack_obs_dists[drone_id].append(do)
+            
+                if len(self.pack_obs_dists[drone_id]) > STATS_BUFFER:
+                    self.pack_obs_dists[drone_id].pop(0)
+    
+                # finally, apply calcs to score move
+                avoid_move_efficiency = ndo / target_dist**0.333
+                acquire_move_efficiency = ndt / target_dist**0.333
+                # for balancing avoidance with acquisition
+            
+        # 4. if w/in reasonable distance, declare victory
+        if target_dist <= TARGET_RADIUS:
+            print("************** target acquired ************")
+            self.target_acquired = True
+        
+            # move acquired target to acquired targets
+            self.acquired_targets.append(self.current_targets[target_id])
+            self.target_inventory.remove(self.current_targets[target_id])
+            
+            print("pct complete:", (len(self.acquired_targets) /
+                                    (len(self.acquired_targets) + len(self.target_inventory))))
+                    
+            if len(self.acquired_targets) % 5 == 1:
+                take_screen_shot(screen)
+            
+            # remove old target
+            self.current_targets.remove([target_id])
+            # get a new target
+            self.assign_target(False, drone_id)
+            print("current targets:")
+            print(self.current_targets)
+
+        print("***** out eval_move *****")
+        return target_dist, true_target_angle_rads, drone_angle_rads, adj_heading_to_target, avoid_move_efficiency, acquire_move_efficiency
+
+
+    def build_states(self, drone_id, turn_action, heading_adjust, cur_speed):
+        
+        turn_state = avoid_state = acquire_state = hunt_state = drone_state = 0
+        min_sonar_dist = avoid_move_efficiency = acquire_move_efficiency = 0
+
+        # get readings from the various sensors
+        sonar_dist_readings, sonar_color_readings = \
+            self.get_sonar_dist_color_readings(drone_id)
+        
+        turn_readings = sonar_dist_readings[:TURN_NUM_SENSOR]
+        min_sonar_dist = min(turn_readings)
+        turn_readings = turn_readings + sonar_color_readings[:TURN_NUM_SENSOR]
+        turn_state = np.array([turn_readings])
+        
+        if cur_mode != TURN:
+            avoid_readings = sonar_dist_readings[:AVOID_NUM_SENSOR]
+            min_sonar_dist = min(avoid_readings)
+            avoid_readings = avoid_readings + sonar_color_readings[:AVOID_NUM_SENSOR]
+            avoid_readings.append(turn_action)
+            avoid_readings.append(cur_speed)
+            avoid_state = np.array([avoid_readings])
+        
+        if cur_mode in [ACQUIRE, HUNT, PACK]:
+            
+            # calc distances, headings and efficiency
+            min_sonar_dist = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
+            # note: avoid, hunt, pack all using 7 sensors for min dist.
+            # however, pack will only be seeing four sensors. FIX THIS AT SOME POINT.
+            # problem is, you can't call evaluate_move twice as it appends readings for mean sd ea time. So, some moves will be evaluated based on sensor distances it doesn't see.
+            target_dist, target_angle_rads, drone_angle_rads, adj_heading_to_target, \
+                avoid_move_efficiency, acquire_move_efficiency = \
+                self.evaluate_move(drone_id, heading_adjust, min_sonar_dist)
+        
+            acquire_state = np.array([[target_dist, adj_heading_to_target]])
+
+            if cur_mode in [HUNT, PACK]:
+                hunt_readings = sonar_dist_readings[:HUNT_NUM_SENSOR]
+                hunt_readings = hunt_readings + sonar_color_readings[:HUNT_NUM_SENSOR]
+                hunt_readings.append(target_dist)
+                hunt_readings.append(adj_heading_to_target)
+                hunt_state = np.array([hunt_readings])
+                min_sonar_dist = min(sonar_dist_readings[:HUNT_NUM_SENSOR])
+
+            if cur_mode == PACK and (self.crash_frame_ctr == 1 or self.crash_frame_ctr % PACK_EVAL_FRAMES == 0):
+                # pack requires four compas point (above, below, right and left) obs dist readings
+                compass_rads = [0, (3.14/2), 3.14, (-3.14/2)]
+                drone_readings = []
+                
+                # it gets readings by adjusting the sonar readings for the drone angle...
+                print(drone_angle_rads)
+                sonar_angles = [0, 0.6, -0.6, 1.2, -1.2, 2.8, -2.8]
+                sonar_angles_adj = np.add(sonar_angles, drone_angle_rads)
+                print(sonar_angles_adj)
+                
+                # ...then finds the sonar reading closest to its required compass direction
+                for rad in range(len(compass_rads)):
+                    drone_readings.append(sonar_dist_readings[find_nearest(sonar_angles_adj,
+                                                                          compass_rads[rad])])
+                drone_readings.append(target_dist)
+                drone_readings.append(target_angle_rads)
+                drone_state = np.array([drone_readings])
+
+        return turn_state, avoid_state, acquire_state, hunt_state, drone_state, min_sonar_dist, avoid_move_efficiency, acquire_move_efficiency
+
+
+    def calc_rwd(self, drone_id, min_sonar_dist, avoid_move_efficiency, acquire_move_efficiency):
+
+        reward = 0
+
+        # check for crash
+        if min_sonar_dist <= 1 and cur_mode != PACK:
+            print("IN CRASH")
+            reward = -500
+            if self.cur_x[drone_id] < 0 or self.cur_x[drone_id] > width or self.cur_y[drone_id] < 0 or self.cur_y[drone_id] > height:
+                self.drones[drone_id].position = int(width/2), int(height/2)
+                self.cur_x[drone_id], self.cur_y[drone_id] = self.drones[drone_id].position
+                self.num_off_scrn += 1
+                print("off screen. total off screens", self.num_off_scrn)
+                reward = -1000
+            self.recover_from_crash(drone_id)
+            print(reward)
+        
+        else:
+            print("IN ELSE")
+            if cur_mode == TURN:
+                # Rewards better spacing from objects
+                reward = min_sonar_dist
+            
+            elif cur_mode == AVOID:
+                # rewards distance from objects and speed
+                sd_speeds = np.std(SPEEDS)
+                sd_dist = np.std(range(20))
+            
+                std_speed = cur_speed / sd_speeds
+                std_dist = min_sonar_dist / sd_dist
+            
+                std_max_speed = max(SPEEDS) / sd_speeds
+                std_max_dist = SONAR_ARM_LEN / sd_dist
+            
+                reward = ((std_speed * std_dist) +
+                          ((std_max_speed - std_speed) * (std_max_dist - std_dist)))
+            
+            elif cur_mode in [ACQUIRE, HUNT]:
+                # rewards moving in the right direction and acquiring pixels
+                if self.target_acquired == True:
+                    reward = 1000
+                    self.target_acquired = False
+
+                else:
+                    if cur_mode == ACQUIRE:
+                        reward = 100 * acquire_move_efficiency
+                    
+                    elif cur_mode == HUNT:
+                        reward = 50 * (acquire_move_efficiency + avoid_move_efficiency)
+
+            elif cur_mode == PACK and (self.crash_frame_ctr == 1 or self.crash_frame_ctr % PACK_EVAL_FRAMES == 0):
+                # rewards moving all drones in right direction and acquiring pixels
+                reward = 50 * (acquire_move_efficiency + avoid_move_efficiency)
+            
+            print(reward)
+            #if self.total_frame_ctr % 50000 == 0 or self.total_frame_ctr % 50000 == 1:
+            #    print("***** new rcd *****")
+            #    print("target dist:", target_dist)
+            #    print("dt:", dt)
+            #    print("mean dist deltas:", np.mean(self.tgt_deltas))
+            #    print("std dist deltas:", np.std(self.tgt_deltas))
+            #    print("ndt:", ndt)
+            #    print("min obs dist:", min(sonar_dist_readings[:HUNT_NUM_SENSOR]))
+            #    print("do:", do)
+            #    print("mean obs dists:", np.mean(self.obs_dists))
+            #    print("std obs dists:", np.std(self.obs_dists))
+            #    print("ndo:", ndo)
+            #    print("target dist ** 0.33:", target_dist**0.333)
+            #    print("move eff:", move_efficiency)
+            #    print("reward:", reward)
+            
+        return reward
+
+
+    def recover_from_crash(self, drone_id):
         """
         we hit something, so recover
         """
-        while self.crashed:
-            crash_adjust = -100
-            # Go backwards.
-            self.car_body.velocity = crash_adjust * driving_direction # was -100
-            self.crashed = False
-            for i in range(10): # was 10
-                self.car_body.angle += .2  # Turn a little.
-                screen.fill(THECOLORS["red"])  # Red is scary!
-                draw(screen, self.space)
-                self.space.step(1./10)
-                if draw_screen:
-                    pygame.display.flip()
-                clock.tick()
+        #while self.crashed:
+        crash_adjust = -100
+        # back up
+        self.drones[drone_id].velocity = crash_adjust * self.driving_direction[drone_id]
+        #self.crashed = False
+        for i in range(10): # was 10
+            self.drones[drone_id].angle += .2  # Turn a little.
+            screen.fill(THECOLORS["red"])  # Red is scary!
+            draw(screen, self.space)
+            self.space.step(1./10)
+            if draw_screen:
+                pygame.display.flip()
+            clock.tick()
 
-    def get_sonar_dist_color_readings(self, x, y, angle):
+
+    def get_sonar_dist_color_readings(self, drone_id):
         sonar_dist_readings = []
         sonar_color_readings = []
         """
@@ -539,7 +712,7 @@ class GameState:
         """
         
         # make sonar "arms"
-        arm_1 = self.make_sonar_arm(x, y)
+        arm_1 = self.make_sonar_arm(drone_id)
         arm_2 = arm_1
         arm_3 = arm_1
         arm_4 = arm_1
@@ -548,19 +721,19 @@ class GameState:
         arm_7 = arm_1
         
         # rotate arms to get vector of readings
-        d, c = self.get_arm_dist_color(arm_1, x, y, angle, 0)
+        d, c = self.get_arm_dist_color(arm_1, 0, drone_id)
         sonar_dist_readings.append(d); sonar_color_readings.append(c)
-        d, c = self.get_arm_dist_color(arm_2, x, y, angle, 0.6)
+        d, c = self.get_arm_dist_color(arm_2, 0.6, drone_id)
         sonar_dist_readings.append(d); sonar_color_readings.append(c)
-        d, c = self.get_arm_dist_color(arm_3, x, y, angle, -0.6)
+        d, c = self.get_arm_dist_color(arm_3, -0.6, drone_id)
         sonar_dist_readings.append(d); sonar_color_readings.append(c)
-        d, c = self.get_arm_dist_color(arm_4, x, y, angle, 1.2)
+        d, c = self.get_arm_dist_color(arm_4, 1.2, drone_id)
         sonar_dist_readings.append(d); sonar_color_readings.append(c)
-        d, c = self.get_arm_dist_color(arm_5, x, y, angle, -1.2)
+        d, c = self.get_arm_dist_color(arm_5, -1.2, drone_id)
         sonar_dist_readings.append(d); sonar_color_readings.append(c)
-        d, c = self.get_arm_dist_color(arm_6, x, y, angle, 2.8)
+        d, c = self.get_arm_dist_color(arm_6, 2.8, drone_id)
         sonar_dist_readings.append(d); sonar_color_readings.append(c)
-        d, c = self.get_arm_dist_color(arm_7, x, y, angle, -2.8)
+        d, c = self.get_arm_dist_color(arm_7, -2.8, drone_id)
         sonar_dist_readings.append(d); sonar_color_readings.append(c)
         
         if show_sensors:
@@ -568,7 +741,8 @@ class GameState:
 
         return sonar_dist_readings, sonar_color_readings
 
-    def get_arm_dist_color(self, arm, x, y, angle, offset):
+
+    def get_arm_dist_color(self, arm, offset, drone_id):
         # count arm length to nearest obstruction
         i = 0
 
@@ -577,7 +751,9 @@ class GameState:
             i += 1
             
             # move the point to the right spot
-            rotated_p = self.get_rotated_point(x, y, point[0], point[1], angle + offset)
+            rotated_p = self.get_rotated_point(self.cur_x[drone_id], self.cur_y[drone_id],
+                                               point[0], point[1],
+                                               self.drones[drone_id].angle + offset)
             
             # return i if rotated point is off screen
             if rotated_p[0] <= 0 or rotated_p[1] <= 0 or rotated_p[0] >= width or rotated_p[1] >= height:
@@ -596,15 +772,18 @@ class GameState:
 
         return i, 0 # 0 is safe color
 
-    def make_sonar_arm(self, x, y):
+
+    def make_sonar_arm(self, drone_id):
         spread = 10  # gap between points on sonar arm
         distance = 10  # number of points on sonar arm
         arm_points = []
         # builds arm flat. it will be rotated about the center later
         for i in range(1, SONAR_ARM_LEN): # was 40
-            arm_points.append((x + distance + (spread * i), y))
+            arm_points.append((self.cur_x[drone_id] + distance +
+                               (spread * i), self.cur_y[drone_id]))
 
         return arm_points
+    
     
     def get_rotated_point(self, x_1, y_1, x_2, y_2, radians):
         # Rotate x_2, y_2 around x_1, y_1 by angle.
@@ -617,14 +796,15 @@ class GameState:
         
         return int(new_x), int(new_y)
 
+
     def get_track_or_not(self, reading):
         # check to see if color encountered is safe (i.e., should not be crash)
         if reading == pygame.color.THECOLORS[BACK_COLOR] or \
-            reading == pygame.color.THECOLORS[CAR_COLOR] or \
+            reading == pygame.color.THECOLORS[DRONE_COLOR] or \
             reading == pygame.color.THECOLORS[SMILE_COLOR] or \
-            reading == pygame.color.THECOLORS[PATH_COLOR] or \
             reading == pygame.color.THECOLORS[ACQUIRE_PIXEL_COLOR] or \
-            reading == pygame.color.THECOLORS[ACQUIRED_PIXEL_COLOR]:
+            reading == pygame.color.THECOLORS[ACQUIRED_PIXEL_COLOR] or \
+            reading == pygame.color.THECOLORS[PATH_COLOR]:
             return 0
         else:
             if reading == pygame.color.THECOLORS[WALL_COLOR]:
@@ -640,7 +820,7 @@ class GameState:
 
     def generate_targets(self, first_iter):
         
-        # calculate number of targets that can fit space
+        # calc number of targets that can fit space
         num_pxl_x_dir = int((width - 2 * ACQUIRE_MARGIN)/ACQUIRE_PIXEL_SEPARATION)
         num_pxl_y_dir = int((height- 2 * ACQUIRE_MARGIN)/ACQUIRE_PIXEL_SEPARATION)
         
@@ -655,100 +835,48 @@ class GameState:
                 y_pxl = (ACQUIRE_MARGIN + (v * ACQUIRE_PIXEL_SEPARATION))
                 
                 if(first_iter == True):
-                    self.target_pixels.append((x_pxl,y_pxl))
+                    self.target_inventory.append((x_pxl,y_pxl))
                 
                 ctr += 1
 
         return num_pxl_x_dir, num_pxl_y_dir
 
-    def assign_next_target(self, last_xy, first_iter):
+    def assign_target(self, first_iter, drone_id):
         
         # clear the path surface
         path_grid.fill(pygame.color.THECOLORS[BACK_COLOR])
         
-        # randomly select a new target
+        # mark target as acquired
         if first_iter == False:
             
             pygame.draw.rect(target_grid, pygame.color.THECOLORS[ACQUIRED_PIXEL_COLOR],
-                             ((last_xy[0], height-last_xy[1]), (ACQUIRE_PIXEL_SIZE,
-                                                         ACQUIRE_PIXEL_SIZE)), 0)
+                             ((self.cur_x[drone_id], self.cur_y[drone_id]),
+                              (ACQUIRE_PIXEL_SIZE, ACQUIRE_PIXEL_SIZE)), 0)
         
-        self.current_target = random.choice(self.target_pixels)
+        # randomly select a new target
+        new_target = random.choice(self.target_inventory)
         
-        # closest logic
-        #dx = np.array([int(i[0]) for i in self.target_pixels]) - last_xy[0]
-        #dy = np.array([int(i[1]) for i in self.target_pixels]) - last_xy[1]
-        #dists = np.sqrt(pow(dx,2) + pow(dy,2))
-        #dists = dists.tolist()
-        #index = dists.index(min(dists))
-        #self.current_target = self.target_pixels[index]
+        self.current_targets.append(new_target)
+        print("new target:", new_target)
         
         # draw the new target
         pygame.draw.rect(target_grid, pygame.color.THECOLORS[ACQUIRE_PIXEL_COLOR],
-                         ((self.current_target[0], height-self.current_target[1]),
+                         ((new_target[0], height-new_target[1]),
                           (ACQUIRE_PIXEL_SIZE, ACQUIRE_PIXEL_SIZE)), 0)
-                          
-        print("new target:", self.current_target)
-
-
-    # not currently used
-    def get_touched_pixels(self,x,y):
-        
-        touched_pixels = []
-        
-        # use start and end points for last move to calculate line
-        if self.last_xy[0] - x == 0:
-            
-            # have to take negative slope due to banged up way pygame reads screen
-            m = -((y - self.last_xy[1]) / ((x+0.0001) - self.last_xy[0]))
-            # use small x diff value to eliminate inf on vertical moves
-            
-        else:
-            
-            m = -((y - self.last_xy[1]) / (x - self.last_xy[0]))
-    
-        b = (y - (m * x))
-            
-        lo2hi_x = sorted([x,self.last_xy[0]])
-        lo2hi_y = sorted([y,self.last_xy[1]])
-            
-        if len(range(lo2hi_x[0],lo2hi_x[1])) > 1:
-            
-            x_pixels = list(range(lo2hi_x[0]+1,lo2hi_x[1]+1))
-        
-        else:
-            
-            x_pixels = lo2hi_x
-        
-        if len(range(lo2hi_y[0],lo2hi_y[1])) > 1:
-            
-            y_pixels = list(range(lo2hi_y[0]+1,lo2hi_y[1]+1))
-                
-        else:
-            
-            y_pixels = lo2hi_y
-
-        # save any points that overlap target pixels
-        for i in range(len(x_pixels)):
-            for j in range(len(y_pixels)):
-                if y_pixels[j] == m * x_pixels[i] + b:
-                    touched_pixels.append((x_pixels[i],y_pixels[j]))
-
-        return touched_pixels
 
 # ***** global functions *****
 
-def take_screen_shot(screen, type):
+def find_nearest(array, value):
+    idx = (np.abs(array-value)).argmin()
+    return idx
+
+def take_screen_shot(screen):
     time_taken = time.asctime(time.localtime(time.time()))
     time_taken = time_taken.replace(" ", "_")
     time_taken = time_taken.replace(":",".")
-    if type == "snap":
-        save_file = "screenshots/" + time_taken + ".jpeg"
-        print("screen shot taken")
-    else:
-        save_file = "video/" + time_taken + ".jpeg"
-
+    save_file = "screenshots/" + time_taken + ".jpeg"
     pygame.image.save(screen,save_file)
+    print("screen shot taken")
 
 # HOLD FOR CONVNET: down sample the image
 # pathSurf_scaled = pygame.transform.smoothscale(pathSurf,
