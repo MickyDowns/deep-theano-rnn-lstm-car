@@ -32,7 +32,7 @@ HUNT = 1
 TURN = 2
 AVOID = 3
 ACQUIRE = 4
-cur_mode = HUNT
+cur_mode = TURN
 
 # PyGame init
 width = 1000
