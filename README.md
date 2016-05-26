@@ -2,7 +2,7 @@
 
 ## overview
 
-I'm teaching my daughters about artificial intelligence. This project introduces key concepts around reinforcement learning, using sensor data, writing objective functions and layering networks. The result, to this point, is a 2-D implementation of learning drones that:
+I'm teaching my daughters about artificial intelligence. This project introduces key concepts around reinforcement learning, using sensor data, writing objective functions and layering networks. The result, to this point, is a digital, 2-D implementation of learning drones that:
 
     *   Avoid: Turn, accelerate, decelerate to avoid obstacles
 
@@ -10,19 +10,22 @@ I'm teaching my daughters about artificial intelligence. This project introduces
 
     *   Hunt: Acquire target objects while avoiding obstacles
 
-    *   (IN PROCESS) Pack: Accelerate and improve hunt results by directing >1 drones
+    *   Pack: Accelerate and improve hunt results by directing >1 drones
 
-Here's a video overview: [![layered reinforcement learning for complex behaviors](https://img.youtube.com/vi/WrLRGzbfeZc/0.jpg)](https://www.youtube.com/watch?v=WrLRGzbfeZc)
+Here's a 1-minute video of the final result: [![layered reinforcement learning for complex behaviors](https://img.youtube.com/vi/WrLRGzbfeZc/0.jpg)](https://www.youtube.com/watch?v=WrLRGzbfeZc)
 
-In general, layered learning is used when mapping directly from inputs to outputs is not tractable e.g., too complex for current algorithms, networks. Layered learning starts with a bottoms-up, hierarchical task decomposition. It then uses machine learning algorithms to exploit data at each level to train specific, separable models. Finally, the output of learning in one layer feeds into the next layer until the complex behavior is achieved. More here: http://www.cs.cmu.edu/~mmv/papers/00ecml-llearning.pdf. 
+Here's a 3-minute "making of" video showing layer training: [![layered reinforcement learning for complex behaviors](https://img.youtube.com/vi/WrLRGzbfeZc/0.jpg)](https://www.youtube.com/watch?v=WrLRGzbfeZc)
 
-It is possible that the tasks performed herein could be performed by a single, deep, deep neural net. The folks at DeepMind (of Go fame) used Q-learning to train a single network to win Atari games (https://t.co/liV9sJFoCp). However, I have specifically avoided giving the drones a down-sampled, convnet view of the entire environment. Instead, they learn it thru exploration as I will eventually flash this network to real drones and want the learning to continue onboard, on CPU. 
+### basic concepts (skip if you're in a hurry)
+**Layered learning** is used when mapping directly from inputs to outputs is not tractable e.g., too complex for current algorithms, networks, hardware. It starts with a bottoms-up, hierarchical task decomposition. It then uses machine learning algorithms to exploit data at each level to train function-specific models. The output of learning in one layer feeds into the next layer until the desired, complex behaviors are achieved. **This model has 5 networks in 4 layers.** More here: http://www.cs.cmu.edu/~mmv/papers/00ecml-llearning.pdf.
 
-This project extends work begun by Matt Harvey in his Github repository entitled **Using reinforcement learning to train an autonomous vehicle to avoid obstacles** located here: https://github.com/harvitronix/reinforcement-learning-car. He trained an digital autonomous car to avoid obstacles using reinforcement learning. His ultimate goal is to embed the resulting neural network onto a chip and into a a car that will, hopefully, avoid his cats while cruising his house. I highly recommend his Medium posts on the topic beginning here: https://medium.com/@harvitronix/using-reinforcement-learning-in-python-to-teach-a-virtual-car-to-avoid-obstacles-6e782cc7d4c6.
+**Reinforcement learning** is used when you don't have a correct solution ("y") value for each observation ("X"). In supervised problems, you train the model to predict the correct "y" given input variables "X". In reinforcement, correct "y"s are not provided because they are not known. Further, sub-optimal estimates (actions) are not explicitly corrected. The model learns-as-it-goes by balancing exploration of the solution space (thru random variable generation... **look for "epsilon" in the model**) and exploitation of what it has previously learned.
+
+**Q-Learning** is model-free reinforcement learning. Wha? It learns what action to take at any given time by learning which actions provides the greatest probability-weighted reward thru repeated training. So, it looks at the history of game states (e.g., the distance to obstacles, the distance to the target, the heading of the target, etc.), actions selected and rewards received to determine the best action at any given time. As it learns, it encodes the knowledge of best actions into the network. Think of it as building network paths that translate the incoming state into an output action based on, if you programmed the objective function correctly, a broader notion of cumulative reward. '**Look for "microbatch", "state" and "reward".** 
 
 ## structure
 
-The project technology is Python3, Pygame, Pymunk, Keras and Theano. See "installing" below to get started though be ready to do some problem solving as, given differences in environments, components like Pymunk and Pygame can be problematic. Further, working with Pygame is challenging. I've extensively commented the code. So, even if you don't install and run the code, you'll understand the approach.
+The project technology is Python3, Pygame, Pymunk, Keras and Theano. See "installing" below to get started though be ready to do some problem solving as, given differences in environments, components like Pymunk and Pygame can be challenging. I'll eventually put this in a Docker container to reduce configuration issues. In the meantime, I've commented the code. So, even if you don't install and run the code, you'll understand the approach.
 
 ### networks that work together in 2-D
 
@@ -42,6 +45,11 @@ The first, 2-D, implementation of the models is accomplished through four, indep
 
     ** The fourth network selectively employs the three lower level networks to achieve a complex "hunting" objective. It searches the target area acquiring target pixels while avoiding obstacles. Its inputs are the full array of sonar sensor readings (distance and object color), heading to target and distance to target. Its outputs are either the "acquire" or "avoid" networks (recall "avoid" is in turn a composite of "turn" and "speed" networks). It selectively accepts one or the other's suggested action based on its appraisal of the inputs and its objective function. That objective function is a normalized composite of defensive (avoiding obstacles) and offensive (acquiring target pixels) move efficiency. Note: This model developed reasonably complex hunting behaviors incuding circling the target pixel to find the best angle of attack and a waiting for obstacles to clear its path before proceeding. 
 
+* pack:
+    ** Network 1: The basline fifth network coordinates the "hunting" activities of multiple drones by modifying the target heading input to the "acquire" network. Think of it like directing sheep dogs with hand signals except this network only sees what the drones see. Its inputs are four obstacle distance readings (due north, south, east and west), target distance and target heading from each drone. With these data (and a lot of traning), it learns to direct the drones with nine output commands ranging from 0,0 (no command, follow "hunt" model), to -1,+1 (drone 1 adjust heading right 0.8 radians, drone 2 adjust heading left 0.8 radians). It uses an objective function that values movement towards the target (70%) and away from obstacles (30%). Given the significant noise at this level (due to random object movement and the drone's attempts to avoid them), it evaluates progress only every 3 - 7 moves. **Note: This network is underperforming the baseline at present.** It appears the signal coming from the drone-eye view is too chaotic. While I may continue to tune the input data and reward function, I'll most likely move to a new algorithm better suited to top-down decisions...'
+
+    ** Network 2: Coming soon: convnet in the the q-learning context.  
+
 ### key files
 
 * learning.py: Trains the neural network based based on predictions/decisions, states and rewards. While it contains code to train each of the four networks, they are all trained in similar fashion. Some number of random training samples are generated and evaluated against the objective function. A "state" (of the game world) is generated for each sample move and its efficacy is evaluated against the objective function for that network. These states are stacked (up to 100k), sampled and the submitted in microbatches of 100 to the nets for training. Gradually, they improve after seeing a variety of states with corresponding rewards.
@@ -51,6 +59,12 @@ The first, 2-D, implementation of the models is accomplished through four, indep
 * nn.py: Holds the network schema.
 
 * playing.py: Runs the trained neural networks receiving states from carmunk.py, getting predictions (turn and speed actions) using nn.py returning those to the game, etc.
+
+### credits
+
+This project extends work begun by **Matt Harvey** in his Github repository entitled **Using reinforcement learning to train an autonomous vehicle to avoid obstacles** located here: https://github.com/harvitronix/reinforcement-learning-car. He trained an digital autonomous car to avoid obstacles using reinforcement learning. His ultimate goal is to embed the resulting neural network onto a chip and into a a car that will, hopefully, avoid his cats while cruising his house. I highly recommend his Medium posts on the topic beginning here: https://medium.com/@harvitronix/using-reinforcement-learning-in-python-to-teach-a-virtual-car-to-avoid-obstacles-6e782cc7d4c6.
+
+Note: It is possible that the tasks performed herein could be performed by a single, deep, deep neural net. The folks at DeepMind (of Go fame) used Q-learning to train a single network to win Atari games (https://t.co/liV9sJFoCp). However, I have specifically avoided giving the drones a down-sampled, convnet view of the entire environment. Instead, they learn it thru exploration as I will eventually flash this network to real drones and want the learning to continue onboard. 
 
 ## learnings
 

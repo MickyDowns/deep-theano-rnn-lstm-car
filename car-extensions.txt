@@ -1,57 +1,8 @@
-
-	a. problem
-		i. car scores are not improving 
-	a. symptoms
-		i. end of run distance, reward, etc measures not materially better than beginning
-		ii. need more symptoms
-			a. summarize results of current model e.g., crashes, scores
-			b. run beginning, middle and ending models to observe behavior
-		
-	b. hypothesis
-		i. measurements are wrong and it is better
-			a. run it. 
-		ii. measurements are right
-			a. model is optimizing wrong values. 
-				- check actions, rewards step by step to ensure they’re doing what you want. 
-				- DONE: cleaned up reporting, made sure speed being passed.
-			b. model is broken
-				- revert to two output model to ensure it can learn.
-				- DONE: it can learn w/ only two. 
-			b. right values, not broken, but can’t influence them
-				- DONE: can with a more complex network
-			c. right values, can influence, but can’t solve. 
-				- investigate new models e.g., 
-					+ just add new layers
-						- DONE: adding 3rd hidden improved
-						- ??? 4th hidden
-					+ LSTM - given importance of memory
-
-	c. better model
-		i. add easter eggs or re-xy penalty
-		ii. prior model to predict trajectories, future state
-			a. reading 1: inventory objects
-			b. reading 2: inventory objects, net interim move
-			c. calculate trajectory
-			d. predict future position (really sensor / vector reading)
-			e. train on accuracy of that position
-			f. feed prediction into next layer as revised readings
-				maybe even with current readings
-		ii. if hovering or swarming copters objective, should you:
-			a. be using directional impulse i.e., fwd, back, right, left
-			b. be working in 3D i.e., up, down
-			
 ease of use:
 1. jupyter notebook w/ bash configuration commands
-2. bayesian optimization
-3. run on google cloud platform? no gpu's. 
-
-	
-4. bayesian hyper parm optimization
-5. could you gradually introduce more dogs/cats?
-
-
-applications:
-1. adapt to stock market predictions (think of the "Go" model)
+2. docker container
+3. bayesian hyper parm optimization
+4. run on google cloud platform 
 
 key concepts:
 1. state: all info necessary to make a decision that you expect to take you to a higher value state. so, reinforcement learning is to 1. learn value of states, or 2. the value of state-action pairs.
