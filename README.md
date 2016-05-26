@@ -10,26 +10,24 @@ I'm teaching my daughters about artificial intelligence. This project introduces
 
     *   Hunt: Acquire target objects while avoiding obstacles
 
-    *   Pack: Accelerate and improve hunt results by directing >1 drones
-
-Here's a 1-minute video of the final result: [![layered reinforcement learning for complex behaviors](https://img.youtube.com/vi/WrLRGzbfeZc/0.jpg)](https://www.youtube.com/watch?v=WrLRGzbfeZc)
+    *   (IN PROCESS) Pack: Accelerate and improve hunt results by directing >1 drones
 
 Here's a 3-minute "making of" video showing layer training: [![layered reinforcement learning for complex behaviors](https://img.youtube.com/vi/WrLRGzbfeZc/0.jpg)](https://www.youtube.com/watch?v=WrLRGzbfeZc)
 
-### basic concepts (skip if you're in a hurry)
-**Layered learning** is used when mapping directly from inputs to outputs is not tractable e.g., too complex for current algorithms, networks, hardware. It starts with a bottoms-up, hierarchical task decomposition. It then uses machine learning algorithms to exploit data at each level to train function-specific models. The output of learning in one layer feeds into the next layer until the desired, complex behaviors are achieved. **This model has 5 networks in 4 layers.** More here: http://www.cs.cmu.edu/~mmv/papers/00ecml-llearning.pdf.
+### basic concepts
+**Layered learning** is used when mapping directly from inputs to outputs is not tractable e.g., too complex for current algorithms, networks, hardware. It starts with bottoms-up, hierarchical task decomposition. It then uses machine learning algorithms to exploit data at each level training function-specific models. The output of learning in one layer feeds into the next layer building complex behaviors. More here: http://www.cs.cmu.edu/~mmv/papers/00ecml-llearning.pdf.
 
-**Reinforcement learning** is used when you don't have a correct solution ("y") value for each observation ("X"). In supervised problems, you train the model to predict the correct "y" given input variables "X". In reinforcement, correct "y"s are not provided because they are not known. Further, sub-optimal estimates (actions) are not explicitly corrected. The model learns-as-it-goes by balancing exploration of the solution space (thru random variable generation... **look for "epsilon" in the model**) and exploitation of what it has previously learned.
+**Reinforcement learning** is used when you don't have a correct solution ("y") value for each observation ("X"). The model learns-as-it-goes by balancing exploration of the solution space (thru random variation) and exploitation of what it has previously learned.
 
-**Q-Learning** is model-free reinforcement learning. Wha? It learns what action to take at any given time by learning which actions provides the greatest probability-weighted reward thru repeated training. So, it looks at the history of game states (e.g., the distance to obstacles, the distance to the target, the heading of the target, etc.), actions selected and rewards received to determine the best action at any given time. As it learns, it encodes the knowledge of best actions into the network. Think of it as building network paths that translate the incoming state into an output action based on, if you programmed the objective function correctly, a broader notion of cumulative reward. '**Look for "microbatch", "state" and "reward".** 
+**Q-Learning** is model-free reinforcement learning. It samples historical game states (e.g., the distance to obstacles, targets, etc.), actions taken and rewards received to iteratively refine network weights. It gradually learns what action to take based on expected (probability-weighted) reward. 
 
 ## structure
 
-The project technology is Python3, Pygame, Pymunk, Keras and Theano. See "installing" below to get started though be ready to do some problem solving as, given differences in environments, components like Pymunk and Pygame can be challenging. I'll eventually put this in a Docker container to reduce configuration issues. In the meantime, I've commented the code. So, even if you don't install and run the code, you'll understand the approach.
+The project technology is Python3, Jupyter notebook, Pygame, Pymunk, Keras and Theano. See "installing" below to get started though be ready to do some problem solving as, given differences in environments, components like Pymunk and Pygame can be challenging. **I'll soon put this project into a Docker container to reduce configuration issues.** In the meantime, I've commented the code. So, even if you don't install and run the code, you'll understand the approach.
 
 ### networks that work together in 2-D
 
-The first, 2-D, implementation of the models is accomplished through four, independently-trained neural networks in three categories of operation. They are:
+The first, 2-D, implementation of the models is accomplished through five independently-trained neural networks in four categories of operation. They are:
 
 * avoid: A drone that is not in the air, because it hit a tree, a wall or a person, isn't of much use. So, the first two neural networks enable the drone to avoid obstacles. 
 
@@ -39,26 +37,28 @@ The first, 2-D, implementation of the models is accomplished through four, indep
 
 * acquire: 
 
-    ** The third network trains the drone to search a pre-defined surface (the 1000x700 pixel board) to locate and "touch" a target pixel. Its inputs are the target pixel "coordinates" i.e., a heading adjustment given the drone's current direction and distance. So, when it sees (-180, 150), it learns to turn around (until heading = 0), then travel forward 150 pixels. It has the same five "turn" model outputs (straight, 2 right, 2 left). Finally, it is rewarded for moving efficiently to and then acquiring the pixel. It is penalized for moving away from the pixel or crashing into the walls. Note: This approach decreases, but does not eliminate crashes. This model has no distance sensors and no memory of wall locations. However, to the extent it is successful in focusing its path to the target in a straight, tight line, it avoids walls.
+    ** The third network trains the drone to search a pre-defined surface (the 1000x700 pixel board) to locate and "touch" a target pixel. Its inputs are the target pixel "coordinates" i.e., a heading given the drone's current direction and distance. So, when it sees (-180, 150), it learns to turn around (until heading = 0), then travel forward 150 pixels. It has the same five "turn" model outputs (straight, 2 right, 2 left). Finally, it is rewarded for moving efficiently to and then acquiring the pixel. It is penalized for moving away from the pixel or crashing into the walls. Note: This model has no distance sensors and no memory of wall locations. It avoids crashes only the extent it can plot a straight path to the target.
 
 * hunt:
 
-    ** The fourth network selectively employs the three lower level networks to achieve a complex "hunting" objective. It searches the target area acquiring target pixels while avoiding obstacles. Its inputs are the full array of sonar sensor readings (distance and object color), heading to target and distance to target. Its outputs are either the "acquire" or "avoid" networks (recall "avoid" is in turn a composite of "turn" and "speed" networks). It selectively accepts one or the other's suggested action based on its appraisal of the inputs and its objective function. That objective function is a normalized composite of defensive (avoiding obstacles) and offensive (acquiring target pixels) move efficiency. Note: This model developed reasonably complex hunting behaviors incuding circling the target pixel to find the best angle of attack and a waiting for obstacles to clear its path before proceeding. 
+    ** The fourth network selectively employs the three lower level networks to achieve a complex "hunting" objective. It searches the target area acquiring target pixels while avoiding obstacles. Its inputs are the full array of sonar sensor readings (distance and object color), heading to target and distance to target. Its outputs are either the "acquire" or "avoid" networks. It selectively accepts one or the other's suggested action based on its appraisal of the inputs and its objective function. That objective function is a normalized composite of defensive (avoiding obstacles) and offensive (acquiring target pixels) move efficiency. Note: This model developed reasonably complex hunting behaviors incuding circling the target pixel to find the best angle of attack and a waiting for obstacles to clear its path before proceeding. 
 
 * pack:
-    ** Network 1: The basline fifth network coordinates the "hunting" activities of multiple drones by modifying the target heading input to the "acquire" network. Think of it like directing sheep dogs with hand signals except this network only sees what the drones see. Its inputs are four obstacle distance readings (due north, south, east and west), target distance and target heading from each drone. With these data (and a lot of traning), it learns to direct the drones with nine output commands ranging from 0,0 (no command, follow "hunt" model), to -1,+1 (drone 1 adjust heading right 0.8 radians, drone 2 adjust heading left 0.8 radians). It uses an objective function that values movement towards the target (70%) and away from obstacles (30%). Given the significant noise at this level (due to random object movement and the drone's attempts to avoid them), it evaluates progress only every 3 - 7 moves. **Note: This network is underperforming the baseline at present.** It appears the signal coming from the drone-eye view is too chaotic. While I may continue to tune the input data and reward function, I'll most likely move to a new algorithm better suited to top-down decisions...'
-
-    ** Network 2: Coming soon: convnet in the the q-learning context.  
+    ** The fifth network coordinates the "hunting" activities of multiple drones by modifying the target heading input to the "acquire" network. Think of it like directing sheep dogs with hand signals. Its current inputs are four obstacle distance readings (due north, south, east and west), target distance and target heading from each drone. It learns to direct the drones using nine output commands ranging from 0,0 (no command, follow "hunt" model), to -1,+1 (adjust drone 1 heading right 0.8 radians, adjust drone 2  heading left 0.8 radians). It uses an objective function that values movement towards the target (70%) and away from obstacles (30%). Given the significant noise at this level (due to random object movement and the lower level networks' attempts to avoid them), it evaluates progress only every 3 - 7 moves. **Note: This network is underperforming the baseline naive approach at present.**  
 
 ### key files
 
-* learning.py: Trains the neural network based based on predictions/decisions, states and rewards. While it contains code to train each of the four networks, they are all trained in similar fashion. Some number of random training samples are generated and evaluated against the objective function. A "state" (of the game world) is generated for each sample move and its efficacy is evaluated against the objective function for that network. These states are stacked (up to 100k), sampled and the submitted in microbatches of 100 to the nets for training. Gradually, they improve after seeing a variety of states with corresponding rewards.
+* pack-o-drones.ipynb: This notebook has everything you need to run the game, train and run the networks. Further, it loads pre-trained models. So, while you'll have to acquiaint yourself with some of the variables, you can work sequentially through the models from least to most complex. If you're inclined, you can choose from alternative neural nets trained at each level to understand some of the tradeoffs. 
+    ** The "learning" section trains the neural network based based on predictions/decisions, states and rewards. Each of the five networks are trained in similar fashion. Some number of random training samples are generated and evaluated against the objective function. A "state" (of the game world) is generated for each sample move and its efficacy is evaluated against the objective function for that network. These states are stacked (up to 100k), sampled and the submitted in microbatches of 100 to the nets for training. Gradually, they improve after seeing a variety of states with corresponding rewards.
 
-* carmunk.py: Controls the game play. It receives drone turn and speed commands from learning.py and playing.py. It effects those moves in the game and returns a set of training mode-specific (e.g., turn, speed, acquire, hunt) states. Those states communicate key information about obstacle distances, crashes, rewards, etc. used in training the models. Look in this file if you want to know how the drone and obstacles work, how state is maintained and how rewards are calculated.
+    ** The "game" section controls the game play. It receives drone turn and speed commands from learning.py and playing.py. It effects those moves in the game and returns a set of training mode-specific (e.g., turn, speed, acquire, hunt) states. Those states communicate key information about obstacle distances, crashes, rewards, etc. used in training the models. Look in this file if you want to know how the drone and obstacles work, how state is maintained and how rewards are calculated.
 
-* nn.py: Holds the network schema.
+    ** The "neural net" section holds the network schema.
 
-* playing.py: Runs the trained neural networks receiving states from carmunk.py, getting predictions (turn and speed actions) using nn.py returning those to the game, etc.
+    ** The "playing" section runs the trained neural networks receiving states from game, getting predictions, translating those to actions, effecting the move, etc.
+
+* old-code-files: If you'd rather run from the command line, this directory contains a series of files used to control the game, maintain neural net schema, train models and run the game. '
+
 
 ### credits
 
